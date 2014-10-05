@@ -1,0 +1,13 @@
+{% extends "Repower/base.html" %}
+
+{% block title %}Start{% endblock %}
+
+{% block content %}
+    <h1>Welcome {{ user.username }}</h1>
+
+    <form action="{% url 'account.views.invite' %}" method="post">
+        {% csrf_token %}
+        {{ invite_form.as_p }}
+        <input type="submit" value="Invite"/>
+    </form>
+{% endblock %}

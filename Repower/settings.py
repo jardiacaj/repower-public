@@ -10,6 +10,7 @@ https://docs.djangoproject.com/en/1.7/ref/settings/
 
 # Build paths inside the project like this: os.path.join(BASE_DIR, ...)
 import os
+
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 
 
@@ -37,6 +38,8 @@ INSTALLED_APPS = (
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'repower',
+    'account',
+    'game'
 )
 
 MIDDLEWARE_CLASSES = (
@@ -84,5 +87,13 @@ USE_TZ = True
 STATIC_URL = '/static/'
 
 TEMPLATE_DIRS = (
-    os.path.join(BASE_DIR,  'templates'),
+    os.path.join(BASE_DIR, 'templates'),
 )
+
+LOGIN_URL = '/login/'
+
+
+# Game settings
+MAX_INVITES_PER_USER = 3
+INVITE_CODE_LENGTH = 7
+INVITE_MAIL_SENDER_ADDRESS = 'anonymous@localhost'

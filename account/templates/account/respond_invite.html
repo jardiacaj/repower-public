@@ -1,0 +1,16 @@
+{% extends "Repower/base.html" %}
+
+{% block title %}Respond invite{% endblock %}
+
+{% block content %}
+    <h1>You received an invitation to play Repower</h1>
+
+    <form action="{% url 'account.views.respond_invite' code=invite.code %}" method="post">
+        <p>Invited by {{ invite.invitor.user.username }}</p>
+
+        <p>Invited e-mail address is {{ invite.email }}</p>
+        {% csrf_token %}
+        {{ respond_form.as_p }}
+        <input type="submit" value="Respond"/>
+    </form>
+{% endblock %}
