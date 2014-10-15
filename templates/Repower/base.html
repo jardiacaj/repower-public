@@ -8,11 +8,14 @@
 </head>
 
 <body>
-{% if user.is_authenticated %}
-    <p><a href="{% url 'account.views.logout' %}">Log out</a></p>
-{% else %}
-    <p><a href="{% url 'account.views.login' %}">Log in</a></p>
-{% endif %}
+<p>
+    {% if user.is_authenticated %}
+        <a href="{% url 'account.views.logout' %}">Log out</a>
+    {% else %}
+        <a href="{% url 'account.views.login' %}">Log in</a>
+    {% endif %}
+    - <a href="{% url 'Repower.views.home' %}">Home</a>
+</p>
 
 {% if messages %}
     <ul class="messages">

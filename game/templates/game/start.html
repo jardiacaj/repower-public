@@ -5,6 +5,28 @@
 {% block content %}
     <h1>Welcome {{ user.username }}</h1>
 
+    <h3>Your current matches:</h3>
+
+    <ul>
+        {% for match_player in match_players %}
+            <li>
+                {% if match_player.ready %}
+                    ☑
+                {% else %}
+                    ☐
+                {% endif %}
+                <a href="{{ match_player.match.url }}">{{ match_player.match.name }}</a>
+                ({{ match_player.match.get_status_display }})
+            </li>
+        {% endfor %}
+    </ul>
+
+    <p>
+        <a href="{% url 'game.views.new_match' %}">Set up new match</a><br>
+        <a href="">Join a public match</a><br>
+        <a href="">Watch an ongoing match</a><br>
+    </p>
+
     <form action="{% url 'account.views.invite' %}" method="post">
         {% csrf_token %}
         {{ invite_form.as_p }}

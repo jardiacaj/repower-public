@@ -1,0 +1,18 @@
+{% extends "Repower/base.html" %}
+
+{% block title %}Invite{% endblock %}
+
+{% block content %}
+    <h1>Invite to {{ match.name }}</h1>
+
+    <ul>
+        {% for candidate in candidates %}
+            <li>{{ candidate.user.username }} [<a href="{% url 'game.views.match_invite' match.pk candidate.user.pk %}">invite</a>]
+            </li>
+        {% empty %}
+            <li>No candidates to invite</li>
+        {% endfor %}
+    </ul>
+
+
+{% endblock %}

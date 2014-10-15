@@ -1,4 +1,5 @@
 from django.contrib.auth import authenticate, login as django_login
+from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import AuthenticationForm
 from django.contrib.auth.models import User
 from django.contrib.auth.views import logout_then_login
@@ -22,6 +23,9 @@ class RespondInviteForm(forms.Form):
 
 
 def login(request):
+    if request.user.is_authenticated():
+        return HttpResponseRedirect(reverse('game.views.start'))
+
     if request.method == 'POST':
         form = AuthenticationForm(request, data=request.POST)
         if form.is_valid():
@@ -32,17 +36,13 @@ def login(request):
                 messages.error(request, 'Invalid data.')
                 return render(request, 'Repower/home.html', {'form': form})
             else:
-                if not user.is_active:
-                    messages.error(request, 'Your user account has been deactivated.')
+                try:
+                    player = Player.objects.get(user=user)
+                    django_login(request, user)
+                    return HttpResponseRedirect(reverse('game.views.start'))
+                except Player.DoesNotExist:
+                    messages.error(request, 'User is not a player.')
                     return render(request, 'Repower/home.html', {'form': form})
-                else:
-                    try:
-                        player = Player.objects.get(user=user)
-                        django_login(request, user)
-                        return HttpResponseRedirect(reverse('game.views.start'))
-                    except Player.DoesNotExist:
-                        messages.error(request, 'User is not a player.')
-                        return render(request, 'Repower/home.html', {'form': form})
 
     else:
         form = AuthenticationForm(request)
@@ -57,10 +57,12 @@ def view_account(request):
     pass
 
 
+@login_required
 def edit_account(request):
     pass
 
 
+@login_required
 def invite(request):
     if request.method == 'POST':
         form = InviteForm(data=request.POST)
@@ -99,16 +101,20 @@ def invite(request):
 
 
 def respond_invite(request, code):
+    if request.user.is_authenticated():
+        messages.error(request, "Please log out first (and remember that multiple accounts per person are not allowed)")
+        return HttpResponseRedirect(reverse('game.views.start'))
+
     invite = get_object_or_404(Invite, code=code)
 
     if not invite.valid:
-        messages.error(request, "This invite is either invalid or has been already used")
+        messages.error(request, "This invite cannot be used")
         return HttpResponseRedirect(reverse('Repower.views.home'))
 
     if User.objects.filter(email=invite.email).exists():
         invite.valid = False
         invite.save()
-        messages.error(request, "This invite has been already used")
+        messages.error(request, "This invite cannot be used")
         return HttpResponseRedirect(reverse('Repower.views.home'))
 
     if request.method == 'POST':

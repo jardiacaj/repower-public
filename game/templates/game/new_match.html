@@ -1,0 +1,15 @@
+{% extends "Repower/base.html" %}
+
+{% block title %}New match{% endblock %}
+
+{% block content %}
+    <h1>Start a new match</h1>
+
+    <p>You will be able to invite players after choosing the basic settings.</p>
+
+    <form action="{% url 'game.views.new_match' %}" method="post">
+        {% csrf_token %}
+        {{ setup_form.as_p }}
+        <input type="submit" value="Create"/>
+    </form>
+{% endblock %}

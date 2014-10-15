@@ -1,0 +1,43 @@
+{% extends "Repower/base.html" %}
+
+{% block title %}{{ match.name }}{% endblock %}
+
+{% block content %}
+    <h1>{{ match.name }} ({{ match.map.num_seats }} players)</h1>
+
+    <p>Owner: {{ match.owner.user.username }}<br>
+        {% if match.public %}
+            Public match (any player may join) [<a href="{% url 'game.views.make_private' match.pk %}">make private</a>]
+        {% else %}
+            Private match (only invited players can join) [
+            <a href="{% url 'game.views.make_public' match.pk %}">make public</a>]
+        {% endif %}
+    </p>
+
+    <p>Players:
+        {% for match_player in match.players.all %}
+            <br>
+
+            {% if match_player.ready %}
+                ☑
+            {% else %}
+                ☐
+            {% endif %}
+
+            {{ match_player.player.user.username }}
+
+            {% if user == match_player.player.user %}
+                {% if not match_player.ready %}
+                    [<a href="{% url 'game.views.ready' match.pk %}">make ready</a>]
+                {% endif %}
+                [<a href="{% url 'game.views.leave' match.pk %}">leave game</a>]
+            {% else %}
+                [<a href="{% url 'game.views.kick' match.pk match_player.player.user.pk %}">kick</a>]
+            {% endif %}
+        {% endfor %}
+
+        {% if match.map.num_seats > match.players.count %} {% if match.owner.user == user or match.public %}
+            <br>[<a href="{% url 'game.views.match_invite' match.pk %}">invite</a>]
+        {% endif %}{% endif %}
+    </p>
+{% endblock %}

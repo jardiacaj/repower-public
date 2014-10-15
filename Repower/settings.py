@@ -92,6 +92,7 @@ TEMPLATE_DIRS = (
 
 LOGIN_URL = '/login/'
 
+SKIP_SLOW_TESTS = False
 
 # Game settings
 MAX_INVITES_PER_USER = 3

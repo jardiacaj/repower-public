@@ -8,3 +8,5 @@ urlpatterns = patterns('',
                        url(r'invite/$', 'account.views.invite', name='invite'),
                        url(r'invite/(?P<code>\w+)$', 'account.views.respond_invite', name='respond_invite')
 )
+
+# Do not forget to add unauthenticated access tests

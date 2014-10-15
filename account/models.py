@@ -15,6 +15,12 @@ class PlayerManager(models.Manager):
     def get_by_user(self, user):
         return self.get(user=user)
 
+    def get_by_match(self, match):
+        return self.filter(match_players__in=match.players)
+
+    def get_match_candidates(self, match):
+        return self.exclude(match_players__not_in=match.players.values('pk')).filter(user__is_active=True)
+
 
 class Player(models.Model):
     objects = PlayerManager()
