@@ -1,6 +1,49 @@
 from django.db import migrations
 
-from game.models import Map, MapCountry, MapRegion, MapRegionLink
+from game.models import Map, MapCountry, MapRegion, MapRegionLink, BoardTokenType, TokenConversion, TokenValueConversion
+
+
+def insert_token_types(apps, schema_editor):
+    infantry = BoardTokenType(name="Infantry", short_name="IN", movements=2, strength=2, purchasable=True,
+                              one_water_cross_per_movement=True, can_be_on_land=True)
+    infantry.save()
+    small_tank = BoardTokenType(name="Small Tank", short_name="S-T", movements=3, strength=3, purchasable=True,
+                                one_water_cross_per_movement=True, can_be_on_land=True)
+    small_tank.save()
+    fighter = BoardTokenType(name="Fighter", short_name="F", movements=5, strength=5, purchasable=True,
+                             one_water_cross_per_movement=False, can_be_on_land=True)
+    fighter.save()
+    destroyer = BoardTokenType(name="Destroyer", short_name="D", movements=1, strength=10, purchasable=True,
+                               one_water_cross_per_movement=False, can_be_on_water=True)
+    destroyer.save()
+
+    regiment = BoardTokenType(name="Regiment", short_name="REG", movements=2, strength=20, purchasable=False,
+                              one_water_cross_per_movement=True, can_be_on_land=True)
+    regiment.save()
+    tank = BoardTokenType(name="Tank", short_name="TNK", movements=3, strength=30, purchasable=False,
+                          one_water_cross_per_movement=True, can_be_on_land=True)
+    tank.save()
+    bomber = BoardTokenType(name="Bomber", short_name="B", movements=5, strength=25, purchasable=False,
+                            one_water_cross_per_movement=False, can_be_on_land=True)
+    bomber.save()
+    cruiser = BoardTokenType(name="Cruiser", short_name="C", movements=1, strength=50, purchasable=False,
+                             one_water_cross_per_movement=False, can_be_on_water=True)
+    cruiser.save()
+
+    mega_missile = BoardTokenType(name="Mega-Missile", short_name="M-M", movements=0, strength=0, purchasable=False,
+                                  can_be_on_land=True,
+                                  special_destroys_all=True,
+                                  one_water_cross_per_movement=False,
+                                  special_attack_reserves=True,
+                                  special_missile=True)
+    mega_missile.save()
+
+    TokenConversion(needs=infantry, produces=regiment).save()
+    TokenConversion(needs=small_tank, produces=tank).save()
+    TokenConversion(needs=fighter, produces=bomber).save()
+    TokenConversion(needs=destroyer, produces=cruiser).save()
+
+    TokenValueConversion(from_tokens=True, needs_value=100, produces=mega_missile)
 
 
 def insert_maps(apps, schema_editor):
@@ -239,9 +282,10 @@ def insert_maps(apps, schema_editor):
 
 class Migration(migrations.Migration):
     dependencies = [
-        ('game', '0002_auto_20141009_2144'),
+        ('game', '0001_initial'),
     ]
 
     operations = [
         migrations.RunPython(insert_maps),
+        migrations.RunPython(insert_token_types)
     ]

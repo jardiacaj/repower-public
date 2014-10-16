@@ -37,7 +37,7 @@ def new_match(request):
             current_player = Player.objects.get_by_user(request.user)
             match = Match.objects.create_match(name, current_player, map)
             MatchPlayer.objects.create_player(match, current_player)
-            return HttpResponseRedirect(match.url())
+            return HttpResponseRedirect(match.get_absolute_url())
     else:
         form = MatchCreationForm()
     return render(request, 'game/new_match.html', {'setup_form': form})
@@ -51,18 +51,18 @@ def match_invite(request, match_pk, player_pk=None):
         player = get_object_or_404(Player, pk=player_pk)
         if not match.owner.user == request.user and not (match.public and match.players.get(player=player)):
             messages.error(request, 'Only the owner can invite in private games')
-            return HttpResponseRedirect(match.url())
+            return HttpResponseRedirect(match.get_absolute_url())
         try:
             match.join_player(player)
-            return HttpResponseRedirect(match.url())
+            return HttpResponseRedirect(match.get_absolute_url())
         except PlayerCannotJoinMatch:
             messages.error(request, 'This player can not be invited')
         except MatchIsFull:
             messages.error(request, 'Match is full')
-            return HttpResponseRedirect(match.url())
+            return HttpResponseRedirect(match.get_absolute_url())
         except MatchInWrongStatus:
             messages.error(request, 'Match is no longer in set up phase')
-            return HttpResponseRedirect(match.url())
+            return HttpResponseRedirect(match.get_absolute_url())
 
     candidates = Player.objects.get_match_candidates(match)
     return render(request, 'game/match_invite.html', {'match': match, 'candidates': candidates})
@@ -94,7 +94,7 @@ def ready(request, match_pk):
         messages.error(request, "You are already ready")
     except MatchInWrongStatus:
         messages.error(request, "The current game status doesn't allow you to be ready")
-    return HttpResponseRedirect(match.url())
+    return HttpResponseRedirect(match.get_absolute_url())
 
 
 @login_required
@@ -120,7 +120,7 @@ def change_public(request, match_pk, public):
         match.save()
         messages.success(request, "This game is now public" if public else "This game is now private")
 
-    return HttpResponseRedirect(match.url())
+    return HttpResponseRedirect(match.get_absolute_url())
 
 
 @login_required
@@ -135,7 +135,7 @@ def kick(request, match_pk, player_pk):
     else:
         match_player_to_kick.kick()
 
-    return HttpResponseRedirect(match.url())
+    return HttpResponseRedirect(match.get_absolute_url())
 
 
 @login_required
@@ -144,4 +144,4 @@ def leave(request, match_pk):
     player = Player.objects.get_by_user(request.user)
     match_player = MatchPlayer.objects.get_by_match_and_player(match, player)
     match_player.leave()
-    return HttpResponseRedirect(match.url())
+    return HttpResponseRedirect(match.get_absolute_url())

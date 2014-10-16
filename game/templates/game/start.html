@@ -10,12 +10,12 @@
     <ul>
         {% for match_player in match_players %}
             <li>
-                {% if match_player.ready %}
+                {% if match_player.setup_ready %}
                     ☑
                 {% else %}
                     ☐
                 {% endif %}
-                <a href="{{ match_player.match.url }}">{{ match_player.match.name }}</a>
+                <a href="{{ match_player.match.get_absolute_url }}">{{ match_player.match.name }}</a>
                 ({{ match_player.match.get_status_display }})
             </li>
         {% endfor %}

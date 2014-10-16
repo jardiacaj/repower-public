@@ -14,4 +14,6 @@ urlpatterns = patterns('',
                        url(r'match/(?P<match_pk>\d+)/kick/(?P<player_pk>\d+)$', 'game.views.kick', name='kick'),
 )
 
+# TODO: public game listing and joining
+
 # Do not forget to add unauthenticated access tests

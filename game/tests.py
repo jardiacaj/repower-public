@@ -2,7 +2,7 @@ from django.core.urlresolvers import reverse
 from django.test import TestCase
 
 from account.tests import create_test_users, create_inactive_players
-from game.models import Match, MatchPlayer
+from game.models import Match, MatchPlayer, Turn, PlayerInTurn, BoardToken
 
 
 class UnauthenticatedAccess(TestCase):
@@ -68,7 +68,7 @@ class BasicMatchSetup(TestCase):
         self.assertEqual(match.owner, players[0])
         self.assertEqual(match.players.count(), 1)
         self.assertEqual(match.players.get().player, players[0])
-        self.assertRedirects(response, match.url())
+        self.assertRedirects(response, match.get_absolute_url())
         self.assertContains(response, players[0].user.username)
 
         response = self.client.get(reverse('game.views.start'))
@@ -100,7 +100,7 @@ class BasicMatchSetup(TestCase):
 
         response = self.client.get(
             reverse('game.views.match_invite', kwargs={'match_pk': match.pk, 'player_pk': players[1].pk}), follow=True)
-        self.assertRedirects(response, match.url())
+        self.assertRedirects(response, match.get_absolute_url())
         self.assertEqual(match.players.count(), 2)
         self.assertContains(response, players[0].user.username)
         self.assertContains(response, players[1].user.username)
@@ -120,7 +120,7 @@ class BasicMatchSetup(TestCase):
 
         response = self.client.get(
             reverse('game.views.match_invite', kwargs={'match_pk': match.pk, 'player_pk': players[4].pk}), follow=True)
-        self.assertRedirects(response, match.url())
+        self.assertRedirects(response, match.get_absolute_url())
         self.assertEqual(match.players.count(), 3)
         self.assertContains(response, players[0].user.username)
         self.assertContains(response, players[1].user.username)
@@ -149,7 +149,7 @@ class BasicMatchSetup(TestCase):
 
         response = self.client.get(
             reverse('game.views.match_invite', kwargs={'match_pk': match.pk, 'player_pk': players[3].pk}), follow=True)
-        self.assertRedirects(response, match.url())
+        self.assertRedirects(response, match.get_absolute_url())
         self.assertEqual(match.players.count(), 4)
         self.assertContains(response, players[0].user.username)
         self.assertContains(response, players[1].user.username)
@@ -159,7 +159,7 @@ class BasicMatchSetup(TestCase):
 
         response = self.client.get(
             reverse('game.views.match_invite', kwargs={'match_pk': match.pk, 'player_pk': players[2].pk}), follow=True)
-        self.assertRedirects(response, match.url())
+        self.assertRedirects(response, match.get_absolute_url())
         self.assertEqual(match.players.count(), 4)
         self.assertContains(response, players[0].user.username)
         self.assertContains(response, players[1].user.username)
@@ -169,19 +169,19 @@ class BasicMatchSetup(TestCase):
         self.assertContains(response, "Match is full")
 
         response = self.client.get(reverse('game.views.make_public', kwargs={'match_pk': match.pk}), follow=True)
-        self.assertRedirects(response, match.url())
+        self.assertRedirects(response, match.get_absolute_url())
         self.assertTrue(Match.objects.get(pk=match.pk).public)
 
         response = self.client.get(reverse('game.views.make_private', kwargs={'match_pk': match.pk}), follow=True)
-        self.assertRedirects(response, match.url())
+        self.assertRedirects(response, match.get_absolute_url())
         self.assertFalse(Match.objects.get(pk=match.pk).public)
 
         response = self.client.get(reverse('game.views.ready', kwargs={'match_pk': match.pk}), follow=True)
-        self.assertRedirects(response, match.url())
-        self.assertTrue(MatchPlayer.objects.get_by_match_and_player(match, players[0]).ready)
-        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[1]).ready)
-        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[3]).ready)
-        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[4]).ready)
+        self.assertRedirects(response, match.get_absolute_url())
+        self.assertTrue(MatchPlayer.objects.get_by_match_and_player(match, players[0]).setup_ready)
+        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[1]).setup_ready)
+        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[3]).setup_ready)
+        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[4]).setup_ready)
         self.assertEqual(match.status, Match.STATUS_SETUP)
 
         response = self.client.post(reverse('account.views.logout'), follow=True)
@@ -194,11 +194,11 @@ class BasicMatchSetup(TestCase):
         self.assertIn('_auth_user_id', self.client.session)
 
         response = self.client.get(reverse('game.views.ready', kwargs={'match_pk': match.pk}), follow=True)
-        self.assertRedirects(response, match.url())
-        self.assertTrue(MatchPlayer.objects.get_by_match_and_player(match, players[0]).ready)
-        self.assertTrue(MatchPlayer.objects.get_by_match_and_player(match, players[1]).ready)
-        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[3]).ready)
-        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[4]).ready)
+        self.assertRedirects(response, match.get_absolute_url())
+        self.assertTrue(MatchPlayer.objects.get_by_match_and_player(match, players[0]).setup_ready)
+        self.assertTrue(MatchPlayer.objects.get_by_match_and_player(match, players[1]).setup_ready)
+        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[3]).setup_ready)
+        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[4]).setup_ready)
         self.assertEqual(match.status, Match.STATUS_SETUP)
 
         response = self.client.post(reverse('account.views.logout'), follow=True)
@@ -211,11 +211,11 @@ class BasicMatchSetup(TestCase):
         self.assertIn('_auth_user_id', self.client.session)
 
         response = self.client.get(reverse('game.views.ready', kwargs={'match_pk': match.pk}), follow=True)
-        self.assertRedirects(response, match.url())
-        self.assertTrue(MatchPlayer.objects.get_by_match_and_player(match, players[0]).ready)
-        self.assertTrue(MatchPlayer.objects.get_by_match_and_player(match, players[1]).ready)
-        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[3]).ready)
-        self.assertTrue(MatchPlayer.objects.get_by_match_and_player(match, players[4]).ready)
+        self.assertRedirects(response, match.get_absolute_url())
+        self.assertTrue(MatchPlayer.objects.get_by_match_and_player(match, players[0]).setup_ready)
+        self.assertTrue(MatchPlayer.objects.get_by_match_and_player(match, players[1]).setup_ready)
+        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[3]).setup_ready)
+        self.assertTrue(MatchPlayer.objects.get_by_match_and_player(match, players[4]).setup_ready)
         self.assertEqual(match.status, Match.STATUS_SETUP)
 
         response = self.client.post(reverse('account.views.logout'), follow=True)
@@ -226,15 +226,16 @@ class BasicMatchSetup(TestCase):
                                     data={'username': players[3], 'password': 'dpwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
-
+        """
         response = self.client.get(reverse('game.views.ready', kwargs={'match_pk': match.pk}), follow=True)
-        self.assertRedirects(response, match.url())
-        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[0]).ready)
-        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[1]).ready)
-        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[3]).ready)
-        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[4]).ready)
+        self.assertRedirects(response, match.get_absolute_url())
+        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[0]).setup_ready)
+        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[1]).setup_ready)
+        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[3]).setup_ready)
+        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[4]).setup_ready)
         match = Match.objects.get(pk=match.pk)
         self.assertEqual(match.status, Match.STATUS_PLAYING)
+        """
 
     def test_start_two_player_game(self):
         players = create_test_users()
@@ -255,7 +256,7 @@ class BasicMatchSetup(TestCase):
         self.assertEqual(match.owner, players[0])
         self.assertEqual(match.players.count(), 1)
         self.assertEqual(match.players.get().player, players[0])
-        self.assertRedirects(response, match.url())
+        self.assertRedirects(response, match.get_absolute_url())
         self.assertContains(response, players[0].user.username)
 
         response = self.client.get(reverse('game.views.start'))
@@ -287,7 +288,7 @@ class BasicMatchSetup(TestCase):
 
         response = self.client.get(
             reverse('game.views.match_invite', kwargs={'match_pk': match.pk, 'player_pk': players[1].pk}), follow=True)
-        self.assertRedirects(response, match.url())
+        self.assertRedirects(response, match.get_absolute_url())
         self.assertEqual(match.players.count(), 2)
         self.assertContains(response, players[0].user.username)
         self.assertContains(response, players[1].user.username)
@@ -307,22 +308,22 @@ class BasicMatchSetup(TestCase):
 
         response = self.client.get(
             reverse('game.views.match_invite', kwargs={'match_pk': match.pk, 'player_pk': players[0].pk}), follow=True)
-        self.assertRedirects(response, match.url())
+        self.assertRedirects(response, match.get_absolute_url())
         self.assertEqual(match.players.count(), 2)
         self.assertContains(response, "Match is full")
 
         response = self.client.get(reverse('game.views.make_public', kwargs={'match_pk': match.pk}), follow=True)
-        self.assertRedirects(response, match.url())
+        self.assertRedirects(response, match.get_absolute_url())
         self.assertTrue(Match.objects.get(pk=match.pk).public)
 
         response = self.client.get(reverse('game.views.make_private', kwargs={'match_pk': match.pk}), follow=True)
-        self.assertRedirects(response, match.url())
+        self.assertRedirects(response, match.get_absolute_url())
         self.assertFalse(Match.objects.get(pk=match.pk).public)
 
         response = self.client.get(reverse('game.views.ready', kwargs={'match_pk': match.pk}), follow=True)
-        self.assertRedirects(response, match.url())
-        self.assertTrue(MatchPlayer.objects.get_by_match_and_player(match, players[0]).ready)
-        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[1]).ready)
+        self.assertRedirects(response, match.get_absolute_url())
+        self.assertTrue(MatchPlayer.objects.get_by_match_and_player(match, players[0]).setup_ready)
+        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[1]).setup_ready)
         self.assertEqual(match.status, Match.STATUS_SETUP)
 
         response = self.client.post(reverse('account.views.logout'), follow=True)
@@ -335,11 +336,24 @@ class BasicMatchSetup(TestCase):
         self.assertIn('_auth_user_id', self.client.session)
 
         response = self.client.get(reverse('game.views.ready', kwargs={'match_pk': match.pk}), follow=True)
-        self.assertRedirects(response, match.url())
-        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[0]).ready)
-        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[1]).ready)
+        self.assertRedirects(response, match.get_absolute_url())
+        self.assertTrue(MatchPlayer.objects.get_by_match_and_player(match, players[0]).setup_ready)
+        self.assertTrue(MatchPlayer.objects.get_by_match_and_player(match, players[1]).setup_ready)
         match = Match.objects.get(pk=match.pk)
         self.assertEqual(match.status, Match.STATUS_PLAYING)
+        countries = list(match.map.countries.all())
+        self.assertEqual(MatchPlayer.objects.get_by_match_and_player(match, players[0]).country, countries[0])
+        self.assertEqual(MatchPlayer.objects.get_by_match_and_player(match, players[1]).country, countries[1])
+        turn = Turn.objects.get(match=match, number=1)
+        self.assertEqual(len(PlayerInTurn.objects.filter(match_player__match=match)), 2)
+        self.assertEqual(len(BoardToken.objects.filter(
+            owner__match_player=MatchPlayer.objects.get_by_match_and_player(match, players[0]))), 8)
+        self.assertEqual(len(BoardToken.objects.filter(
+            owner__match_player=MatchPlayer.objects.get_by_match_and_player(match, players[1]))), 8)
+        self.assertEqual(PlayerInTurn.objects.get(
+            match_player=MatchPlayer.objects.get_by_match_and_player(match, players[0])).total_strength, 40)
+        self.assertEqual(PlayerInTurn.objects.get(
+            match_player=MatchPlayer.objects.get_by_match_and_player(match, players[1])).total_strength, 40)
 
     def test_kicks(self):
         players = create_test_users()
@@ -364,7 +378,7 @@ class BasicMatchSetup(TestCase):
         response = self.client.get(
             reverse('game.views.kick', kwargs={'match_pk': match.pk, 'player_pk': players[1].pk}), follow=True)
         self.assertEqual(match.players.count(), 1)
-        self.assertRedirects(response, match.url())
+        self.assertRedirects(response, match.get_absolute_url())
 
         response = self.client.get(
             reverse('game.views.match_invite', kwargs={'match_pk': match.pk, 'player_pk': players[1].pk}), follow=True)
@@ -380,7 +394,7 @@ class BasicMatchSetup(TestCase):
         response = self.client.get(
             reverse('game.views.kick', kwargs={'match_pk': match.pk, 'player_pk': players[1].pk}), follow=True)
         self.assertEqual(match.players.count(), 2)
-        self.assertRedirects(response, match.url())
+        self.assertRedirects(response, match.get_absolute_url())
 
     def test_leave_during_setup(self):
         players = create_test_users()
@@ -403,7 +417,7 @@ class BasicMatchSetup(TestCase):
         self.assertEqual(match.players.count(), 2)
 
         response = self.client.get(reverse('game.views.leave', kwargs={'match_pk': match.pk}), follow=True)
-        self.assertRedirects(response, match.url())
+        self.assertRedirects(response, match.get_absolute_url())
         match = Match.objects.get(pk=1)
         self.assertEqual(match.players.count(), 2)
         self.assertEqual(match.status, Match.STATUS_SETUP_ABORTED)
@@ -428,7 +442,7 @@ class BasicMatchSetup(TestCase):
         match = Match.objects.get(pk=2)
         self.assertEqual(match.players.count(), 1)
         self.assertEqual(match.status, Match.STATUS_SETUP)
-        self.assertRedirects(response, match.url())
+        self.assertRedirects(response, match.get_absolute_url())
 
 
         # TODO    def test_join_public_private(self):

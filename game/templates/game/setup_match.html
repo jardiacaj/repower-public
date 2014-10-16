@@ -18,7 +18,7 @@
         {% for match_player in match.players.all %}
             <br>
 
-            {% if match_player.ready %}
+            {% if match_player.setup_ready %}
                 ☑
             {% else %}
                 ☐
@@ -27,7 +27,7 @@
             {{ match_player.player.user.username }}
 
             {% if user == match_player.player.user %}
-                {% if not match_player.ready %}
+                {% if not match_player.setup_ready %}
                     [<a href="{% url 'game.views.ready' match.pk %}">make ready</a>]
                 {% endif %}
                 [<a href="{% url 'game.views.leave' match.pk %}">leave game</a>]
