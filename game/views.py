@@ -7,7 +7,7 @@ from django.contrib.auth.decorators import login_required
 from account.models import Player
 from account.views import InviteForm
 from game.models import Match, MatchPlayer, PlayerCannotJoinMatch, MatchIsFull, MatchInWrongStatus, \
-    MatchPlayerAlreadyReady, Map
+    MatchPlayerAlreadyReady, Map, BoardTokenType, TokenConversion, TokenValueConversion, MapCountry
 
 
 class MatchCreationForm(forms.Form):
@@ -72,15 +72,99 @@ def match_invite(request, match_pk, player_pk=None):
 def view_match(request, match_pk):
     match = get_object_or_404(Match, pk=match_pk)
     player = Player.objects.get_by_user(request.user)
+    client_is_in_game = MatchPlayer.objects.get_by_match_and_player(match, player) in match.players.all()
+    is_owner = (player == match.owner)
+    token_types = BoardTokenType.objects.all()
+    conversions = TokenConversion.objects.all()
+    value_conversions = TokenValueConversion.objects.all()
+
+    context = {
+        'match': match,
+        'client_is_in_game': client_is_in_game,
+        'is_owner': is_owner,
+        'token_types': token_types,
+        'conversions': conversions,
+        'value_conversions': value_conversions,
+    }
 
     if not MatchPlayer.objects.filter(match=match, player=player).exists():
         return HttpResponse("Viewing matches where you don't participate is not yet implemented")  # TODO
     elif match.status == match.STATUS_SETUP_ABORTED:
         return HttpResponse("Viewing aborted matches is not yet implemented")  # TODO
     elif match.status == match.STATUS_SETUP:
-        return render(request, 'game/setup_match.html', {'match': match})
+        return render(request, 'game/setup_match.html', context)
     elif match.status == match.STATUS_PLAYING:
-        return render(request, 'game/play_match.html', {'match': match})
+        return render(request, 'game/play_match.html', context)
+
+
+def view_map(request, map_pk):
+    show_debug = request.GET.get('show_debug', False)
+    show_links = request.GET.get('show_links', False)
+
+    # TODO: move to model
+    map = get_object_or_404(Map, pk=map_pk)
+
+    from PIL import Image, ImageDraw, ImageFont
+
+    image = Image.open('game/static/game/%s-play.png' % map.image_file_name)
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.load_default()
+
+    for region in map.regions.all():
+        if region.render_on_map:
+            if not show_debug:
+                draw.text((region.position_x + 5, region.position_y + 5), region.name, font=font, fill=(0, 0, 0))
+            else:
+                text1 = "%s / %s" % (
+                    region.name,
+                    region.short_name,
+                )
+                text2 = "%s %s%s" % (
+                    region.country.name if region.country else "-",
+                    "L" if region.land else "",
+                    "W" if region.water else "",
+                )
+                draw.text((region.position_x + 5, region.position_y + 5), text1, font=font, fill=(0, 0, 0))
+                draw.text((region.position_x + 5, region.position_y + 15), text2, font=font, fill=(0, 0, 0))
+            if show_links:
+                for link in region.links_source.all():
+                    if link.destination.render_on_map:
+                        fill = 0
+                        if link.crossing_water:
+                            fill = 255
+                        draw.line(
+                            (region.position_x + region.size_x / 2,
+                             region.position_y + region.size_y / 2,
+                             link.destination.position_x + link.destination.size_x / 2,
+                             link.destination.position_y + link.destination.size_y / 2),
+                            fill=fill
+                        )
+
+    del draw
+    response = HttpResponse(content_type="image/png")
+    image.save(response, "PNG")
+    return response
+
+
+def view_token(request, token_type_pk):
+    # TODO: move to model
+    token_type = get_object_or_404(BoardTokenType, pk=token_type_pk)
+    from PIL import Image
+
+    source = Image.open('game/static/game/%s.gif' % token_type.image_file_name)
+    pixel_data = source.load()
+
+    country_pk = request.GET.get('country', None)
+    if country_pk is not None:
+        country = MapCountry.objects.get(pk=country_pk)
+        for y in range(source.size[0]):
+            for x in range(source.size[1]):
+                if pixel_data[x, y] == 14:
+                    pixel_data[x, y] = country.color_gif_palette
+
+    response = HttpResponse(content_type="image/png")
+    source.save(response, "PNG")
+    return response
 
 
 @login_required
@@ -143,5 +227,8 @@ def leave(request, match_pk):
     match = get_object_or_404(Match, pk=match_pk)
     player = Player.objects.get_by_user(request.user)
     match_player = MatchPlayer.objects.get_by_match_and_player(match, player)
-    match_player.leave()
+    if match_player is not None:
+        match_player.leave()
+    else:
+        messages.error(request, "You are not participating in that game")
     return HttpResponseRedirect(match.get_absolute_url())

@@ -1,16 +1,24 @@
 {% extends "Repower/base.html" %}
+{% load staticfiles %}
 
 {% block title %}{{ match.name }}{% endblock %}
 
 {% block content %}
-    <h1>{{ match.name }} ({{ match.map.num_seats }} players)</h1>
 
-    <p>Owner: {{ match.owner.user.username }}<br>
+    {% comment %}
+    {% with 'game/'|add:match.map.image_file_name|add:'-play.png' as image_static %}
+        <img src="{% static image_static %}" style="float: left;">
+    {% endwith %}
+    {% endcomment %}
+    <img src="{% url 'game.views.view_map' match.map.pk %}" style="float: left;">
+
+    <h1>{{ match.name }}</h1>
+
+    <p>Owner: {{ match.owner.user.username }},
         {% if match.public %}
-            Public match (any player may join) [<a href="{% url 'game.views.make_private' match.pk %}">make private</a>]
+            public match
         {% else %}
-            Private match (only invited players can join) [
-            <a href="{% url 'game.views.make_public' match.pk %}">make public</a>]
+            private match
         {% endif %}
     </p>
 
@@ -18,26 +26,67 @@
         {% for match_player in match.players.all %}
             <br>
 
-            {% if match_player.setup_ready %}
+            {% if match_player.latest_player_in_turn.ready %}
                 ☑
             {% else %}
                 ☐
             {% endif %}
 
-            {{ match_player.player.user.username }}
+            <span style="font-weight: bold; color: #{{ match_player.country.color_rgb }};">
+                {{ match_player.latest_player_in_turn.total_strength }}
 
-            {% if user == match_player.player.user %}
-                {% if not match_player.setup_ready %}
-                    [<a href="{% url 'game.views.ready' match.pk %}">make ready</a>]
-                {% endif %}
-                [<a href="{% url 'game.views.leave' match.pk %}">leave game</a>]
-            {% else %}
-                [<a href="{% url 'game.views.kick' match.pk match_player.player.user.pk %}">kick</a>]
-            {% endif %}
+                {{ match_player.player.user.username }}
+            </span>
+
+            {% for token in match_player.latest_player_in_turn.tokens.all %}
+                <img src="{% url 'game.views.view_token' token.type_id %}?country={{ match_player.country_id }}"
+                     title="{{ token.type.name }}">
+            {% endfor %}
+            ⌁{{ match_player.latest_player_in_turn.power_points }}
         {% endfor %}
-
-        {% if match.map.num_seats > match.players.count %} {% if match.owner.user == user or match.public %}
-            <br>[<a href="{% url 'game.views.match_invite' match.pk %}">invite</a>]
-        {% endif %}{% endif %}
     </p>
+
+    <h2>Commands</h2>
+
+    <p>
+        New command: <br>
+        <select>
+            <option>--- Type ---</option>
+            <option>Movement</option>
+            <option>Purchase</option>
+            <option>Conversion</option>
+        </select>
+
+        <select>
+            <option>--- Token ---</option>
+
+            {% for token_type in token_types %}
+                <option>{{ token_type.name }}</option>
+            {% endfor %}
+        </select>
+
+        <select>
+            <option>--- From ---</option>
+
+            {% for region in match.map.regions.all %}
+                <option>{{ region.name }}</option>
+            {% endfor %}
+        </select>
+
+        <select>
+            <option>--- To ---</option>
+
+            {% for region in match.map.regions.all %}
+                <option>{{ region.name }}</option>
+            {% endfor %}
+        </select>
+    </p>
+
+    {% if client_is_in_game %}
+        {% if not match_player.latest_player_in_turn.ready %}
+            [<a href="{% url 'game.views.ready' match.pk %}">make ready</a>]
+        {% endif %}
+        [<a href="{% url 'game.views.leave' match.pk %}">leave game</a>]
+    {% endif %}
+
 {% endblock %}

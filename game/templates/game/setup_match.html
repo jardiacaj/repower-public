@@ -7,10 +7,11 @@
 
     <p>Owner: {{ match.owner.user.username }}<br>
         {% if match.public %}
-            Public match (any player may join) [<a href="{% url 'game.views.make_private' match.pk %}">make private</a>]
+            Public match (any player may join)
+            {% if is_owner %}[<a href="{% url 'game.views.make_private' match.pk %}">make private</a>]{% endif %}
         {% else %}
-            Private match (only invited players can join) [
-            <a href="{% url 'game.views.make_public' match.pk %}">make public</a>]
+            Private match (only invited players can join)
+            {% if is_owner %}[<a href="{% url 'game.views.make_public' match.pk %}">make public</a>]{% endif %}
         {% endif %}
     </p>
 
@@ -31,12 +32,12 @@
                     [<a href="{% url 'game.views.ready' match.pk %}">make ready</a>]
                 {% endif %}
                 [<a href="{% url 'game.views.leave' match.pk %}">leave game</a>]
-            {% else %}
+            {% elif is_owner %}
                 [<a href="{% url 'game.views.kick' match.pk match_player.player.user.pk %}">kick</a>]
             {% endif %}
         {% endfor %}
 
-        {% if match.map.num_seats > match.players.count %} {% if match.owner.user == user or match.public %}
+        {% if match.map.num_seats > match.players.count %} {% if is_owner or match.public %}
             <br>[<a href="{% url 'game.views.match_invite' match.pk %}">invite</a>]
         {% endif %}{% endif %}
     </p>

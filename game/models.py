@@ -6,6 +6,10 @@ from django.db.models import Sum
 from account.models import Player
 
 
+
+# TODO sensible DB indexes
+
+
 class PlayerCannotJoinMatch(Exception):
     pass
 
@@ -30,7 +34,7 @@ class Map(models.Model):
     num_seats = models.IntegerField(help_text="Number of seats of this map")
     name = models.CharField(max_length=30)
     image_file_name = models.CharField(max_length=30)
-    public = models.BooleanField(help_text="Public maps can be used when players set up a new match")
+    public = models.BooleanField(default=False, help_text="Public maps can be used when players set up a new match")
 
     def __str__(self):
         return "%s (%d players)" % (self.name, self.num_seats)
@@ -44,18 +48,20 @@ class MapCountry(models.Model):
     name = models.CharField(max_length=30)
     reserve = models.ForeignKey('MapRegion', related_name='countries_with_this_reserve')
     headquarters = models.ForeignKey('MapRegion', related_name='countries_with_this_headquarter')
+    color_rgb = models.CharField(max_length=6)
+    color_gif_palette = models.PositiveSmallIntegerField()
 
     def __str__(self):
         return "%s in %s" % (self.name, self.map.name)
 
 
 class MapRegion(models.Model):
-    map = models.ForeignKey(Map)
+    map = models.ForeignKey(Map, related_name='regions')
     country = models.ForeignKey(MapCountry, blank=True, null=True)
     name = models.CharField(max_length=30)
     short_name = models.CharField(max_length=3)
-    land = models.BooleanField()
-    water = models.BooleanField()
+    land = models.BooleanField(default=False)
+    water = models.BooleanField(default=False)
     render_on_map = models.BooleanField(default=True)
     position_x = models.PositiveSmallIntegerField(default=0)
     position_y = models.PositiveSmallIntegerField(default=0)
@@ -95,6 +101,7 @@ class Turn(models.Model):
 class BoardTokenType(models.Model):
     name = models.CharField(max_length=30)
     short_name = models.CharField(max_length=3)
+    image_file_name = models.CharField(max_length=30)
     movements = models.PositiveSmallIntegerField(help_text="Number of tiles this token can cross in one move")
     strength = models.PositiveSmallIntegerField()
     purchasable = models.BooleanField(default=False,
@@ -137,6 +144,7 @@ class PlayerInTurn(models.Model):
     total_strength = models.PositiveIntegerField(default=0)
     timeout_requested = models.BooleanField(default=False)
     ready = models.BooleanField(default=False)
+    left_match = models.BooleanField(default=False)
 
     def calculate_total_strength(self):
         self.total_strength = self.tokens.aggregate(Sum('type__strength'))['type__strength__sum']
@@ -159,6 +167,7 @@ class BoardToken(models.Model):
     position = models.ForeignKey(MapRegion)
     type = models.ForeignKey(BoardTokenType)
     moved_this_turn = models.BooleanField(default=False)
+    can_move_this_turn = models.BooleanField(default=True)
     retreat_from_draw = models.BooleanField(default=False)
 
     def __str__(self):
@@ -228,9 +237,11 @@ class Match(models.Model):
     map = models.ForeignKey(Map, related_name='matches')
     status = models.CharField(max_length=3, choices=STATUSES)
     public = models.BooleanField(default=False)
+    time_limit = models.DateTimeField(blank=True, null=True)  # TODO: use this
+    round_time_limit = models.DateTimeField(blank=True, null=True)  # TODO: use this
 
-    # TODO: max time (vanilla is 2 hours)
-    # TODO: round time (vanilla is 3 minutes)
+    def latest_turn(self):
+        return Turn.objects.filter(match=self).order_by('-number').first()
 
     def join_player(self, player):
         if self.status != self.STATUS_SETUP:
@@ -306,6 +317,7 @@ class Match(models.Model):
         # TODO Draw: retreat, recurse
         #TODO Collect power points, one per country with flag
         #TODO Flag capture (including tokens and power points)
+        # TODO Check victory
 
     def get_absolute_url(self):
         return reverse('game.views.view_match', kwargs={'match_pk': self.pk})
@@ -320,7 +332,10 @@ class MatchPlayerManager(models.Manager):
         return match_player
 
     def get_by_match_and_player(self, match, player):
-        return self.get(match=match, player=player)
+        try:
+            return self.get(match=match, player=player)
+        except MatchPlayer.DoesNotExist:
+            return None
 
 
 class MatchPlayer(models.Model):
@@ -330,11 +345,11 @@ class MatchPlayer(models.Model):
     player = models.ForeignKey(Player, related_name='match_players')
     setup_ready = models.BooleanField(default=False)
     country = models.ForeignKey(MapCountry, related_name='players', blank=True, null=True)
-    # TODO timeout_requested = models.BooleanField(default=False)
-    # TODO left_match = models.BooleanField(default=False)
-    # TODO defeated = models.BooleanField(default=False)
+    timeout_requested = models.BooleanField(default=False)  # TODO: use this
+    left_match = models.BooleanField(default=False)  # TODO: use this
+    defeated = models.BooleanField(default=False)  # TODO: use this
 
-    def get_latest_player_in_turn(self):
+    def latest_player_in_turn(self):
         return PlayerInTurn.objects.filter(match_player=self).order_by('-turn_id').first()
 
     def kick(self):
@@ -361,7 +376,7 @@ class MatchPlayer(models.Model):
             self.save()
             self.match.match_player_ready(self)
         elif self.match.status in (Match.STATUS_PLAYING, Match.STATUS_PAUSED):
-            self.get_latest_player_in_turn().make_ready()
+            self.latest_player_in_turn().make_ready()
         else:
             raise MatchInWrongStatus()
 

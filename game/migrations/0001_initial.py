@@ -13,8 +13,9 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name='BoardToken',
             fields=[
-                ('id', models.AutoField(verbose_name='ID', primary_key=True, auto_created=True, serialize=False)),
+                ('id', models.AutoField(primary_key=True, serialize=False, auto_created=True, verbose_name='ID')),
                 ('moved_this_turn', models.BooleanField(default=False)),
+                ('can_move_this_turn', models.BooleanField(default=True)),
                 ('retreat_from_draw', models.BooleanField(default=False)),
             ],
             options={
@@ -24,9 +25,10 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name='BoardTokenType',
             fields=[
-                ('id', models.AutoField(verbose_name='ID', primary_key=True, auto_created=True, serialize=False)),
+                ('id', models.AutoField(primary_key=True, serialize=False, auto_created=True, verbose_name='ID')),
                 ('name', models.CharField(max_length=30)),
                 ('short_name', models.CharField(max_length=3)),
+                ('image_file_name', models.CharField(max_length=30)),
                 ('movements',
                  models.PositiveSmallIntegerField(help_text='Number of tiles this token can cross in one move')),
                 ('strength', models.PositiveSmallIntegerField()),
@@ -47,13 +49,13 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name='Command',
             fields=[
-                ('id', models.AutoField(verbose_name='ID', primary_key=True, auto_created=True, serialize=False)),
+                ('id', models.AutoField(primary_key=True, serialize=False, auto_created=True, verbose_name='ID')),
                 ('order', models.PositiveSmallIntegerField()),
-                ('type', models.CharField(
-                    choices=[('MOV', 'Move'), ('TCO', 'Token conversion'), ('VCO', 'Value conversion'),
-                             ('BUY', 'Token purchase')], max_length=3)),
+                ('type', models.CharField(max_length=3, choices=[('MOV', 'Move'), ('TCO', 'Token conversion'),
+                                                                 ('VCO', 'Value conversion'),
+                                                                 ('BUY', 'Token purchase')])),
                 ('valid', models.NullBooleanField()),
-                ('buy_type', models.ForeignKey(to='game.BoardTokenType', blank=True, null=True, related_name='+')),
+                ('buy_type', models.ForeignKey(related_name='+', to='game.BoardTokenType', blank=True, null=True)),
             ],
             options={
             },
@@ -62,11 +64,12 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name='Map',
             fields=[
-                ('id', models.AutoField(verbose_name='ID', primary_key=True, auto_created=True, serialize=False)),
+                ('id', models.AutoField(primary_key=True, serialize=False, auto_created=True, verbose_name='ID')),
                 ('num_seats', models.IntegerField(help_text='Number of seats of this map')),
                 ('name', models.CharField(max_length=30)),
                 ('image_file_name', models.CharField(max_length=30)),
-                ('public', models.BooleanField(help_text='Public maps can be used when players set up a new match')),
+                ('public', models.BooleanField(help_text='Public maps can be used when players set up a new match',
+                                               default=False)),
             ],
             options={
             },
@@ -75,8 +78,10 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name='MapCountry',
             fields=[
-                ('id', models.AutoField(verbose_name='ID', primary_key=True, auto_created=True, serialize=False)),
+                ('id', models.AutoField(primary_key=True, serialize=False, auto_created=True, verbose_name='ID')),
                 ('name', models.CharField(max_length=30)),
+                ('color_rgb', models.CharField(max_length=6)),
+                ('color_gif_palette', models.PositiveSmallIntegerField()),
             ],
             options={
                 'verbose_name_plural': 'Map countries',
@@ -86,18 +91,18 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name='MapRegion',
             fields=[
-                ('id', models.AutoField(verbose_name='ID', primary_key=True, auto_created=True, serialize=False)),
+                ('id', models.AutoField(primary_key=True, serialize=False, auto_created=True, verbose_name='ID')),
                 ('name', models.CharField(max_length=30)),
                 ('short_name', models.CharField(max_length=3)),
-                ('land', models.BooleanField()),
-                ('water', models.BooleanField()),
+                ('land', models.BooleanField(default=False)),
+                ('water', models.BooleanField(default=False)),
                 ('render_on_map', models.BooleanField(default=True)),
                 ('position_x', models.PositiveSmallIntegerField(default=0)),
                 ('position_y', models.PositiveSmallIntegerField(default=0)),
                 ('size_x', models.PositiveSmallIntegerField(default=0)),
                 ('size_y', models.PositiveSmallIntegerField(default=0)),
                 ('country', models.ForeignKey(to='game.MapCountry', blank=True, null=True)),
-                ('map', models.ForeignKey(to='game.Map')),
+                ('map', models.ForeignKey(related_name='regions', to='game.Map')),
             ],
             options={
             },
@@ -106,7 +111,7 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name='MapRegionLink',
             fields=[
-                ('id', models.AutoField(verbose_name='ID', primary_key=True, auto_created=True, serialize=False)),
+                ('id', models.AutoField(primary_key=True, serialize=False, auto_created=True, verbose_name='ID')),
                 ('unidirectional', models.BooleanField(default=False)),
                 ('crossing_water', models.BooleanField(default=False)),
                 ('destination', models.ForeignKey(related_name='links_destination', to='game.MapRegion')),
@@ -119,13 +124,15 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name='Match',
             fields=[
-                ('id', models.AutoField(verbose_name='ID', primary_key=True, auto_created=True, serialize=False)),
+                ('id', models.AutoField(primary_key=True, serialize=False, auto_created=True, verbose_name='ID')),
                 ('name', models.CharField(max_length=50)),
-                ('status', models.CharField(
-                    choices=[('SET', 'Set up'), ('SUA', 'Aborted (when in setup)'), ('PLA', 'Playing'),
-                             ('PAU', 'Paused'), ('FIN', 'Finished'), ('ABO', 'Aborted (when in progress)')],
-                    max_length=3)),
+                ('status', models.CharField(max_length=3,
+                                            choices=[('SET', 'Set up'), ('SUA', 'Aborted (when in setup)'),
+                                                     ('PLA', 'Playing'), ('PAU', 'Paused'), ('FIN', 'Finished'),
+                                                     ('ABO', 'Aborted (when in progress)')])),
                 ('public', models.BooleanField(default=False)),
+                ('time_limit', models.DateTimeField(blank=True, null=True)),
+                ('round_time_limit', models.DateTimeField(blank=True, null=True)),
                 ('map', models.ForeignKey(related_name='matches', to='game.Map')),
                 ('owner', models.ForeignKey(related_name='owner_of', to='account.Player')),
             ],
@@ -137,9 +144,12 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name='MatchPlayer',
             fields=[
-                ('id', models.AutoField(verbose_name='ID', primary_key=True, auto_created=True, serialize=False)),
+                ('id', models.AutoField(primary_key=True, serialize=False, auto_created=True, verbose_name='ID')),
                 ('setup_ready', models.BooleanField(default=False)),
-                ('country', models.ForeignKey(to='game.MapCountry', blank=True, null=True, related_name='players')),
+                ('timeout_requested', models.BooleanField(default=False)),
+                ('left_match', models.BooleanField(default=False)),
+                ('defeated', models.BooleanField(default=False)),
+                ('country', models.ForeignKey(related_name='players', to='game.MapCountry', blank=True, null=True)),
                 ('match', models.ForeignKey(related_name='players', to='game.Match')),
                 ('player', models.ForeignKey(related_name='match_players', to='account.Player')),
             ],
@@ -150,13 +160,14 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name='PlayerInTurn',
             fields=[
-                ('id', models.AutoField(verbose_name='ID', primary_key=True, auto_created=True, serialize=False)),
+                ('id', models.AutoField(primary_key=True, serialize=False, auto_created=True, verbose_name='ID')),
                 ('power_points', models.PositiveSmallIntegerField()),
                 ('total_strength', models.PositiveIntegerField(default=0)),
                 ('timeout_requested', models.BooleanField(default=False)),
                 ('ready', models.BooleanField(default=False)),
+                ('left_match', models.BooleanField(default=False)),
                 ('flag_controlled_by',
-                 models.ForeignKey(to='game.MatchPlayer', blank=True, null=True, related_name='+')),
+                 models.ForeignKey(related_name='+', to='game.MatchPlayer', blank=True, null=True)),
                 ('match_player', models.ForeignKey(related_name='+', to='game.MatchPlayer')),
             ],
             options={
@@ -167,7 +178,7 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name='TokenConversion',
             fields=[
-                ('id', models.AutoField(verbose_name='ID', primary_key=True, auto_created=True, serialize=False)),
+                ('id', models.AutoField(primary_key=True, serialize=False, auto_created=True, verbose_name='ID')),
                 ('needs_quantity', models.PositiveSmallIntegerField(default=3)),
                 ('produces_quantity', models.PositiveSmallIntegerField(default=1)),
                 ('needs', models.ForeignKey(related_name='conversions_sourced', to='game.BoardTokenType')),
@@ -180,7 +191,7 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name='TokenValueConversion',
             fields=[
-                ('id', models.AutoField(verbose_name='ID', primary_key=True, auto_created=True, serialize=False)),
+                ('id', models.AutoField(primary_key=True, serialize=False, auto_created=True, verbose_name='ID')),
                 ('from_points', models.BooleanField(default=False)),
                 ('from_tokens', models.BooleanField(default=False)),
                 ('needs_value', models.PositiveSmallIntegerField()),
@@ -193,7 +204,7 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name='Turn',
             fields=[
-                ('id', models.AutoField(verbose_name='ID', primary_key=True, auto_created=True, serialize=False)),
+                ('id', models.AutoField(primary_key=True, serialize=False, auto_created=True, verbose_name='ID')),
                 ('number', models.PositiveIntegerField()),
                 ('start', models.DateTimeField(auto_now_add=True)),
                 ('end', models.DateTimeField(blank=True, null=True)),
@@ -230,19 +241,19 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='command',
             name='conversion',
-            field=models.ForeignKey(to='game.TokenConversion', blank=True, null=True, related_name='+'),
+            field=models.ForeignKey(related_name='+', to='game.TokenConversion', blank=True, null=True),
             preserve_default=True,
         ),
         migrations.AddField(
             model_name='command',
             name='location',
-            field=models.ForeignKey(to='game.MapRegion', blank=True, null=True, related_name='+'),
+            field=models.ForeignKey(related_name='+', to='game.MapRegion', blank=True, null=True),
             preserve_default=True,
         ),
         migrations.AddField(
             model_name='command',
             name='move_destination',
-            field=models.ForeignKey(to='game.MapRegion', blank=True, null=True, related_name='+'),
+            field=models.ForeignKey(related_name='+', to='game.MapRegion', blank=True, null=True),
             preserve_default=True,
         ),
         migrations.AddField(
@@ -254,7 +265,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='command',
             name='value_conversion',
-            field=models.ForeignKey(to='game.TokenConversion', blank=True, null=True, related_name='+'),
+            field=models.ForeignKey(related_name='+', to='game.TokenConversion', blank=True, null=True),
             preserve_default=True,
         ),
         migrations.AddField(

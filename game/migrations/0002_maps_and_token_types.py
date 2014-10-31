@@ -5,32 +5,33 @@ from game.models import Map, MapCountry, MapRegion, MapRegionLink, BoardTokenTyp
 
 def insert_token_types(apps, schema_editor):
     infantry = BoardTokenType(name="Infantry", short_name="IN", movements=2, strength=2, purchasable=True,
-                              one_water_cross_per_movement=True, can_be_on_land=True)
+                              one_water_cross_per_movement=True, can_be_on_land=True, image_file_name="infantry")
     infantry.save()
     small_tank = BoardTokenType(name="Small Tank", short_name="S-T", movements=3, strength=3, purchasable=True,
-                                one_water_cross_per_movement=True, can_be_on_land=True)
+                                one_water_cross_per_movement=True, can_be_on_land=True, image_file_name="small-tank")
     small_tank.save()
     fighter = BoardTokenType(name="Fighter", short_name="F", movements=5, strength=5, purchasable=True,
-                             one_water_cross_per_movement=False, can_be_on_land=True)
+                             one_water_cross_per_movement=False, can_be_on_land=True, image_file_name="fighter")
     fighter.save()
     destroyer = BoardTokenType(name="Destroyer", short_name="D", movements=1, strength=10, purchasable=True,
-                               one_water_cross_per_movement=False, can_be_on_water=True)
+                               one_water_cross_per_movement=False, can_be_on_water=True, image_file_name="destroyer")
     destroyer.save()
 
     regiment = BoardTokenType(name="Regiment", short_name="REG", movements=2, strength=20, purchasable=False,
-                              one_water_cross_per_movement=True, can_be_on_land=True)
+                              one_water_cross_per_movement=True, can_be_on_land=True, image_file_name="regiment")
     regiment.save()
     tank = BoardTokenType(name="Tank", short_name="TNK", movements=3, strength=30, purchasable=False,
-                          one_water_cross_per_movement=True, can_be_on_land=True)
+                          one_water_cross_per_movement=True, can_be_on_land=True, image_file_name="tank")
     tank.save()
     bomber = BoardTokenType(name="Bomber", short_name="B", movements=5, strength=25, purchasable=False,
-                            one_water_cross_per_movement=False, can_be_on_land=True)
+                            one_water_cross_per_movement=False, can_be_on_land=True, image_file_name="bomber")
     bomber.save()
     cruiser = BoardTokenType(name="Cruiser", short_name="C", movements=1, strength=50, purchasable=False,
-                             one_water_cross_per_movement=False, can_be_on_water=True)
+                             one_water_cross_per_movement=False, can_be_on_water=True, image_file_name="cruiser")
     cruiser.save()
 
     mega_missile = BoardTokenType(name="Mega-Missile", short_name="M-M", movements=0, strength=0, purchasable=False,
+                                  image_file_name="mega-missile",
                                   can_be_on_land=True,
                                   special_destroys_all=True,
                                   one_water_cross_per_movement=False,
@@ -51,10 +52,10 @@ def insert_maps(apps, schema_editor):
     two_player_map.save()
 
     south_hq = MapRegion(map=two_player_map, name='South HQ', short_name='SHQ', position_x=260, position_y=575,
-                         size_x=0, size_y=0, land=True, water=True)
+                         size_x=130, size_y=75, land=True, water=True)
     south_hq.save()
     north_hq = MapRegion(map=two_player_map, name='North HQ', short_name='NHQ', position_x=260, position_y=000,
-                         size_x=0, size_y=0, land=True, water=True)
+                         size_x=130, size_y=75, land=True, water=True)
     north_hq.save()
     south_reserve = MapRegion(map=two_player_map, name='South Reserve', short_name='SRe', render_on_map=False,
                               land=True, water=True)
@@ -63,9 +64,11 @@ def insert_maps(apps, schema_editor):
                               land=True, water=True)
     north_reserve.save()
 
-    north_country = MapCountry(map=two_player_map, name="North", headquarters=north_hq, reserve=north_reserve)
+    north_country = MapCountry(map=two_player_map, name="North", headquarters=north_hq, reserve=north_reserve,
+                               color_rgb="00DD00", color_gif_palette=118)
     north_country.save()
-    south_country = MapCountry(map=two_player_map, name="South", headquarters=south_hq, reserve=south_reserve)
+    south_country = MapCountry(map=two_player_map, name="South", headquarters=south_hq, reserve=south_reserve,
+                               color_rgb="FF851C", color_gif_palette=89)
     south_country.save()
 
     south_hq.country = south_country
@@ -78,79 +81,67 @@ def insert_maps(apps, schema_editor):
     north_reserve.save()
 
     ocean = dict()
-    ocean[1] = MapRegion(map=two_player_map, name="Ocean 1", short_name="Oc1", position_x=520, position_y=150)
-    ocean[2] = MapRegion(map=two_player_map, name="Ocean 2", short_name="Oc2", position_x=390, position_y=000)
-    ocean[3] = MapRegion(map=two_player_map, name="Ocean 3", short_name="Oc3", position_x=000, position_y=000)
-    ocean[4] = MapRegion(map=two_player_map, name="Ocean 4", short_name="Oc4", position_x=000, position_y=150)
-    ocean[5] = MapRegion(map=two_player_map, name="Ocean 5", short_name="Oc5", position_x=000, position_y=350)
-    ocean[6] = MapRegion(map=two_player_map, name="Ocean 6", short_name="Oc6", position_x=000, position_y=500)
-    ocean[7] = MapRegion(map=two_player_map, name="Ocean 7", short_name="Oc7", position_x=390, position_y=575)
-    ocean[8] = MapRegion(map=two_player_map, name="Ocean 8", short_name="Oc8", position_x=520, position_y=350)
-    ocean[9] = MapRegion(map=two_player_map, name="Ocean 9", short_name="Oc9", position_x=130, position_y=300)
+    ocean[1] = MapRegion(position_x=520, position_y=150, size_x=130, size_y=75)
+    ocean[2] = MapRegion(position_x=520, position_y=000, size_x=130, size_y=75)
+    ocean[3] = MapRegion(position_x=000, position_y=000, size_x=130, size_y=75)
+    ocean[4] = MapRegion(position_x=000, position_y=150, size_x=130, size_y=75)
+    ocean[5] = MapRegion(position_x=000, position_y=350, size_x=130, size_y=75)
+    ocean[6] = MapRegion(position_x=000, position_y=575, size_x=130, size_y=75)
+    ocean[7] = MapRegion(position_x=520, position_y=575, size_x=130, size_y=75)
+    ocean[8] = MapRegion(position_x=520, position_y=350, size_x=130, size_y=75)
+    ocean[9] = MapRegion(position_x=130, position_y=300, size_x=390, size_y=50)
 
     for key, region in ocean.items():
         region.land = False
         region.water = True
         region.map = two_player_map
+        region.name = "Ocean %d" % key
+        region.short_name = "Oc%d" % key
         region.save()
 
     north = dict()
-    north[1] = MapRegion(map=two_player_map, name="North 1", short_name="No1", position_x=390, position_y=75,
-                         water=True)
-    north[2] = MapRegion(map=two_player_map, name="North 2", short_name="No2", position_x=260, position_y=75,
-                         water=True)
-    north[3] = MapRegion(map=two_player_map, name="North 3", short_name="No3", position_x=130, position_y=75,
-                         water=True)
-    north[4] = MapRegion(map=two_player_map, name="North 4", short_name="No4", position_x=390, position_y=150,
-                         water=True)
-    north[5] = MapRegion(map=two_player_map, name="North 5", short_name="No5", position_x=260, position_y=150,
-                         water=False)
-    north[6] = MapRegion(map=two_player_map, name="North 6", short_name="No6", position_x=130, position_y=150,
-                         water=True)
-    north[7] = MapRegion(map=two_player_map, name="North 7", short_name="No7", position_x=390, position_y=225,
-                         water=True)
-    north[8] = MapRegion(map=two_player_map, name="North 8", short_name="No8", position_x=260, position_y=225,
-                         water=True)
-    north[9] = MapRegion(map=two_player_map, name="North 9", short_name="No9", position_x=130, position_y=225,
-                         water=True)
+    north[1] = MapRegion(position_x=390, position_y=75, water=True, size_x=130, size_y=75)
+    north[2] = MapRegion(position_x=260, position_y=75, water=True, size_x=130, size_y=75)
+    north[3] = MapRegion(position_x=130, position_y=75, water=True, size_x=130, size_y=75)
+    north[4] = MapRegion(position_x=390, position_y=150, water=True, size_x=130, size_y=75)
+    north[5] = MapRegion(position_x=260, position_y=150, water=False, size_x=130, size_y=75)
+    north[6] = MapRegion(position_x=130, position_y=150, water=True, size_x=130, size_y=75)
+    north[7] = MapRegion(position_x=390, position_y=225, water=True, size_x=130, size_y=75)
+    north[8] = MapRegion(position_x=260, position_y=225, water=True, size_x=130, size_y=75)
+    north[9] = MapRegion(position_x=130, position_y=225, water=True, size_x=130, size_y=75)
 
     for key, region in north.items():
         region.land = True
         region.map = two_player_map
         region.country = north_country
+        region.name = "North %d" % key
+        region.short_name = "No%d" % key
         region.save()
 
     south = dict()
-    south[1] = MapRegion(map=two_player_map, name="South 1", short_name="So1", position_x=130, position_y=500,
-                         water=True)
-    south[2] = MapRegion(map=two_player_map, name="South 2", short_name="So2", position_x=260, position_y=500,
-                         water=True)
-    south[3] = MapRegion(map=two_player_map, name="South 3", short_name="So3", position_x=390, position_y=500,
-                         water=True)
-    south[4] = MapRegion(map=two_player_map, name="South 4", short_name="So4", position_x=130, position_y=425,
-                         water=True)
-    south[5] = MapRegion(map=two_player_map, name="South 5", short_name="So5", position_x=260, position_y=425,
-                         water=False)
-    south[6] = MapRegion(map=two_player_map, name="South 6", short_name="So6", position_x=390, position_y=425,
-                         water=True)
-    south[7] = MapRegion(map=two_player_map, name="South 7", short_name="So7", position_x=130, position_y=350,
-                         water=True)
-    south[8] = MapRegion(map=two_player_map, name="South 8", short_name="So8", position_x=260, position_y=350,
-                         water=True)
-    south[9] = MapRegion(map=two_player_map, name="South 9", short_name="So9", position_x=390, position_y=350,
-                         water=True)
+    south[1] = MapRegion(position_x=130, position_y=500, water=True, size_x=130, size_y=75)
+    south[2] = MapRegion(position_x=260, position_y=500, water=True, size_x=130, size_y=75)
+    south[3] = MapRegion(position_x=390, position_y=500, water=True, size_x=130, size_y=75)
+    south[4] = MapRegion(position_x=130, position_y=425, water=True, size_x=130, size_y=75)
+    south[5] = MapRegion(position_x=260, position_y=425, water=False, size_x=130, size_y=75)
+    south[6] = MapRegion(position_x=390, position_y=425, water=True, size_x=130, size_y=75)
+    south[7] = MapRegion(position_x=130, position_y=350, water=True, size_x=130, size_y=75)
+    south[8] = MapRegion(position_x=260, position_y=350, water=True, size_x=130, size_y=75)
+    south[9] = MapRegion(position_x=390, position_y=350, water=True, size_x=130, size_y=75)
 
     for key, region in south.items():
         region.land = True
         region.map = two_player_map
         region.country = south_country
+        region.name = "South %d" % key
+        region.short_name = "So%d" % key
         region.save()
 
     west_island = MapRegion(map=two_player_map, name="West Island", short_name="WIs", position_x=000, position_y=300,
-                            land=True, water=True)
+                            land=True, water=True, size_x=130, size_y=50)
     west_island.save()
     east_island = MapRegion(map=two_player_map, name="East Island", short_name="EIs", position_x=520, position_y=300,
-                            land=True, water=True)
+                            land=True, water=True, size_x=130, size_y=50)
     east_island.save()
 
     MapRegionLink(source=north_reserve, destination=north_hq, unidirectional=True).save()
@@ -233,8 +224,9 @@ def insert_maps(apps, schema_editor):
         3: [5, 6],
         4: [5, 7, 8],
         5: [6, 7, 8, 9],
-        6: [7],
-        8: [9]
+        6: [8, 9],
+        7: [8, ],
+        8: [9, ],
     }
 
     for source, destinations in three_by_three_links.items():

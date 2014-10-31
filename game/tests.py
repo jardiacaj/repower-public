@@ -5,6 +5,10 @@ from account.tests import create_test_users, create_inactive_players
 from game.models import Match, MatchPlayer, Turn, PlayerInTurn, BoardToken
 
 
+
+# TODO: test map view
+
+
 class UnauthenticatedAccess(TestCase):
     def test_game_start_no_login(self):
         response = self.client.get(reverse('game.views.start'), follow=True)
@@ -446,3 +450,4 @@ class BasicMatchSetup(TestCase):
 
 
         # TODO    def test_join_public_private(self):
+        # TODO test creating match with private map
