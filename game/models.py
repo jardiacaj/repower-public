@@ -7,6 +7,8 @@ from account.models import Player
 
 
 
+
+
 # TODO sensible DB indexes
 
 
@@ -94,6 +96,9 @@ class Turn(models.Model):
     start = models.DateTimeField(auto_now_add=True)
     end = models.DateTimeField(blank=True, null=True)
 
+    def is_latest(self):
+        return not self.objects.filter(match=self.match, number__gt=self.number).exists()
+
     def __str__(self):
         return "%d in %s" % (self.number, self.match.name)
 
@@ -125,6 +130,9 @@ class TokenConversion(models.Model):
     produces = models.ForeignKey(BoardTokenType, related_name="conversions_producing")
     produces_quantity = models.PositiveSmallIntegerField(default=1)
 
+    def __str__(self):
+        return "%d %s to %d %s" % (self.needs_quantity, self.needs.name, self.produces_quantity, self.produces.name)
+
 
 class TokenValueConversion(models.Model):
     from_points = models.BooleanField(default=False)
@@ -153,9 +161,14 @@ class PlayerInTurn(models.Model):
     def make_ready(self):
         if self.match_player.match.status not in (Match.STATUS_PLAYING, Match.STATUS_PAUSED):
             raise MatchInWrongStatus()
+        if self.ready:
+            raise MatchPlayerAlreadyReady
         self.ready = True
         self.save()
-        self.match.match_player_ready(self.match_player)
+        self.match_player.match.check_all_players_ready()
+
+    def is_latest(self):
+        return not self.objects.filter(match=self.match, number__gt=self.number).exists()
 
     def __str__(self):
         return "%s in %s (turn %d)" % (
@@ -186,20 +199,29 @@ class Command(models.Model):
         (TYPE_PURCHASE, 'Token purchase')
     )
 
-    player_in_turn = models.ForeignKey(PlayerInTurn)
+    player_in_turn = models.ForeignKey(PlayerInTurn, related_name='commands')
     order = models.PositiveSmallIntegerField()
     type = models.CharField(max_length=3, choices=TYPES)
     location = models.ForeignKey(MapRegion, null=True, blank=True, related_name='+')
     valid = models.NullBooleanField()
+    token_type = models.ForeignKey(BoardTokenType, null=True, blank=True, related_name='+')
 
-    buy_type = models.ForeignKey(BoardTokenType, null=True, blank=True, related_name='+')
     move_destination = models.ForeignKey(MapRegion, null=True, blank=True, related_name='+')
     conversion = models.ForeignKey(TokenConversion, null=True, blank=True, related_name='+')
     value_conversion = models.ForeignKey(TokenConversion, null=True, blank=True, related_name='+')
     # TODO Value conversion token types
 
+    def in_game_str(self):
+        if self.type == self.TYPE_MOVEMENT:
+            return "Move %s from %s to %s" % (self.token_type.name, self.location.name, self.move_destination.name)
+        elif self.type == self.TYPE_PURCHASE:
+            return "Buy %s for ⌁%d" % (self.token_type.name, self.token_type.strength)
+        elif self.type == self.TYPE_CONVERSION:
+            return "Convert %s in %s" % (self.conversion, self.location.name)
+        raise AssertionError("Invalid command type")
+
     def __str__(self):
-        return self.player_in_turn.__str__()  # TODO incomplete
+        return "%s in %s by %s" % (self.type, self.location.name, self.player_in_turn.__str__())
 
 
 class MatchManager(models.Manager):
@@ -252,7 +274,7 @@ class Match(models.Model):
             raise PlayerCannotJoinMatch()
         MatchPlayer.objects.create_player(self, player)
 
-    def match_player_ready(self, match_player):
+    def check_all_players_ready(self):
         if self.status not in (self.STATUS_PAUSED, self.STATUS_PLAYING, self.STATUS_SETUP):
             raise MatchInWrongStatus()
         if self.map.num_seats == self.players.count():
@@ -263,6 +285,8 @@ class Match(models.Model):
             if all_ready:
                 self.all_players_ready()
 
+    check_all_players_ready.alters_data = True
+
     def all_players_ready(self):
         if self.status == self.STATUS_SETUP:
             self.transition_from_setup_to_playing()
@@ -272,6 +296,8 @@ class Match(models.Model):
             pass
         else:
             raise MatchInWrongStatus()
+
+    all_players_ready.alters_data = True
 
     def transition_from_setup_to_playing(self):
         # Create first turn
@@ -305,6 +331,8 @@ class Match(models.Model):
         self.status = self.STATUS_PLAYING
         self.save()
 
+    transition_from_setup_to_playing.alters_data = True
+
     def process_turn(self):
         pass
         # TODO Process movements
@@ -318,6 +346,7 @@ class Match(models.Model):
         #TODO Collect power points, one per country with flag
         #TODO Flag capture (including tokens and power points)
         # TODO Check victory
+
 
     def get_absolute_url(self):
         return reverse('game.views.view_match', kwargs={'match_pk': self.pk})
@@ -374,7 +403,7 @@ class MatchPlayer(models.Model):
                 raise MatchPlayerAlreadyReady
             self.setup_ready = True
             self.save()
-            self.match.match_player_ready(self)
+            self.match.check_all_players_ready()
         elif self.match.status in (Match.STATUS_PLAYING, Match.STATUS_PAUSED):
             self.latest_player_in_turn().make_ready()
         else:

@@ -76,8 +76,8 @@ class LoginTests(TestCase):
     def test_user_but_not_player_login(self):
         user = create_not_player()
         response = self.client.post(reverse('account.views.login'),
-                                    data={'username': user.username, 'password': 'apwd'})
-        self.assertEqual(response.status_code, 200)
+                                    data={'username': user.username, 'password': 'apwd'}, follow=True)
+        self.assertRedirects(response, reverse('account.views.login'))
         self.assertNotIn('_auth_user_id', self.client.session)
         self.assertContains(response, "is not a player")
 

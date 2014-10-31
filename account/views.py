@@ -17,7 +17,7 @@ class InviteForm(forms.Form):
     email = forms.EmailField(label='Invite by e-mail')
 
 
-class RespondInviteForm(forms.Form):
+class RespondInviteForm(forms.Form):  # TODO add username
     password = forms.CharField(label='Password', widget=forms.PasswordInput)
     password_confirm = forms.CharField(label='Confirm password', widget=forms.PasswordInput)
 
@@ -29,20 +29,20 @@ def login(request):
     if request.method == 'POST':
         form = AuthenticationForm(request, data=request.POST)
         if form.is_valid():
-            username = request.POST['username']
-            password = request.POST['password']
+            username = request.POST.get('username')
+            password = request.POST.get('password')
             user = authenticate(username=username, password=password)
             if user is None:
-                messages.error(request, 'Invalid data.')
-                return render(request, 'Repower/home.html', {'form': form})
+                messages.error(request, 'Invalid data')
+                return HttpResponseRedirect(reverse('account.views.login'))
             else:
                 try:
                     player = Player.objects.get(user=user)
                     django_login(request, user)
                     return HttpResponseRedirect(reverse('game.views.start'))
                 except Player.DoesNotExist:
-                    messages.error(request, 'User is not a player.')
-                    return render(request, 'Repower/home.html', {'form': form})
+                    messages.error(request, 'User is not a player')
+                    return HttpResponseRedirect(reverse('account.views.login'))
 
     else:
         form = AuthenticationForm(request)
@@ -67,7 +67,7 @@ def invite(request):
     if request.method == 'POST':
         form = InviteForm(data=request.POST)
         if form.is_valid():
-            email = request.POST['email']
+            email = request.POST.get('email')
             if Invite.objects.filter(invitor=request.user).count() >= settings.MAX_INVITES_PER_USER:
                 messages.error(request, 'You used up all your invites (%d)' % settings.MAX_INVITES_PER_USER)
             elif Invite.objects.filter(email=email).exists():
@@ -94,7 +94,7 @@ def invite(request):
                     [email],
                     fail_silently=False
                 )
-                messages.success(request, 'An invite has been sent to %s.' % email)
+                messages.success(request, 'An invite has been sent to %s' % email)
     else:
         form = InviteForm(request)
     return render(request, 'game/start.html', {'invite_form': form})
@@ -120,8 +120,8 @@ def respond_invite(request, code):
     if request.method == 'POST':
         form = RespondInviteForm(data=request.POST)
         if form.is_valid():
-            password = request.POST['password']
-            password_confirm = request.POST['password_confirm']
+            password = request.POST.get('password')
+            password_confirm = request.POST.get('password_confirm')
             if password != password_confirm:
                 messages.error(request, 'Your passwords do not match')
             else:

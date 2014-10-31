@@ -12,7 +12,7 @@
     {% endcomment %}
     <img src="{% url 'game.views.view_map' match.map.pk %}" style="float: left;">
 
-    <h1>{{ match.name }}</h1>
+    <h1>{{ match.name }} <span style="font-size: 70%;"> -- <i>Turn #{{ turn.number }}</i></span></h1>
 
     <p>Owner: {{ match.owner.user.username }},
         {% if match.public %}
@@ -38,55 +38,114 @@
                 {{ match_player.player.user.username }}
             </span>
 
-            {% for token in match_player.latest_player_in_turn.tokens.all %}
-                <img src="{% url 'game.views.view_token' token.type_id %}?country={{ match_player.country_id }}"
-                     title="{{ token.type.name }}">
-            {% endfor %}
-            ⌁{{ match_player.latest_player_in_turn.power_points }}
+            <span style="clear: right; float: right;">
+                {% for token in match_player.latest_player_in_turn.tokens.all %}
+                    <img src="{% url 'game.views.view_token' token.type_id %}?country={{ match_player.country_id }}"
+                         title="{{ token.type.name }}">
+                {% endfor %}
+                ⌁{{ match_player.latest_player_in_turn.power_points }}
+            </span>
         {% endfor %}
     </p>
 
     <h2>Commands</h2>
 
     <p>
-        New command: <br>
-        <select>
-            <option>--- Type ---</option>
-            <option>Movement</option>
-            <option>Purchase</option>
-            <option>Conversion</option>
-        </select>
-
-        <select>
-            <option>--- Token ---</option>
-
-            {% for token_type in token_types %}
-                <option>{{ token_type.name }}</option>
-            {% endfor %}
-        </select>
-
-        <select>
-            <option>--- From ---</option>
-
-            {% for region in match.map.regions.all %}
-                <option>{{ region.name }}</option>
-            {% endfor %}
-        </select>
-
-        <select>
-            <option>--- To ---</option>
-
-            {% for region in match.map.regions.all %}
-                <option>{{ region.name }}</option>
-            {% endfor %}
-        </select>
+        {% for command in match_player.latest_player_in_turn.commands.all %}
+            {{ command.in_game_str }}<br>
+        {% endfor %}
     </p>
+
+    <form action="{% url 'game.views.add_command' match.id %}"
+          method="post"
+          {% if not can_add_commands %}style="display: none;"{% endif %}>
+        {% csrf_token %}
+        <p>
+            New command: <br>
+            <script>
+                function movement_type_change() {
+                    document.getElementById('move_command').style.display = "none";
+                    document.getElementById('buy_command').style.display = "none";
+                    document.getElementById('convert_command').style.display = "none";
+
+                    var e = document.getElementById("command_type");
+                    document.getElementById(e.options[e.selectedIndex].value + '_command').style.display = '';
+                }
+            </script>
+
+            <select id="command_type" name="command_type" onchange="movement_type_change()">
+                <option value="move" selected="selected">Move</option>
+                <option value="buy">Purchase</option>
+                <option value="convert">Convert</option>
+            </select>
+
+            <span id="move_command">
+                <select name="move_token_type">
+                    <option value="0">--- Token ---</option>
+
+                    {% for token_type in token_types %}
+                        <option value="{{ token_type.id }}">{{ token_type.name }}</option>
+                    {% endfor %}
+                </select>
+
+                <select name="move_region_from">
+                    <option value="0">--- From ---</option>
+
+                    {% for region in match.map.regions.all %}
+                        <option value="{{ region.id }}">{{ region.name }}</option>
+                    {% endfor %}
+                </select>
+
+                <select name="move_region_to">
+                    <option value="0">--- To ---</option>
+
+                    {% for region in match.map.regions.all %}
+                        <option value="{{ region.id }}">{{ region.name }}</option>
+                    {% endfor %}
+                </select>
+            </span>
+
+            <span id="buy_command" style="display: none;">
+                <select name="buy_token_type">
+                    <option value="0">--- Token ---</option>
+
+                    {% for token_type in token_types %}
+                        {% if token_type.purchasable %}
+                            <option value="{{ token_type.id }}">{{ token_type.name }} (⌁{{ token_type.strength }})
+                            </option>
+                        {% endif %}
+                    {% endfor %}
+                </select>
+            </span>
+
+            <span id="convert_command" style="display: none;">
+                <select name="convert_id">
+                    <option value="0">--- Conversions ---</option>
+
+                    {% for conversion in conversions %}
+                        <option value="{{ conversion.id }}">
+                            {{ conversion }}
+                        </option>
+                    {% endfor %}
+                </select>
+
+                <select name="convert_region">
+                    <option value="0">--- Location ---</option>
+
+                    {% for region in match.map.regions.all %}
+                        <option value="{{ region.id }}">{{ region.name }}</option>
+                    {% endfor %}
+                </select>
+            </span>
+
+            <input type="submit" value="ADD COMMAND">
+        </p>
+    </form>
 
     {% if client_is_in_game %}
         {% if not match_player.latest_player_in_turn.ready %}
             [<a href="{% url 'game.views.ready' match.pk %}">make ready</a>]
         {% endif %}
-        [<a href="{% url 'game.views.leave' match.pk %}">leave game</a>]
     {% endif %}
 
 {% endblock %}

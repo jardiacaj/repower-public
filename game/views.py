@@ -1,13 +1,15 @@
 from django import forms
 from django.contrib import messages
+from django.core.urlresolvers import reverse
 from django.http import HttpResponseRedirect, HttpResponse
 from django.shortcuts import render, get_object_or_404
 from django.contrib.auth.decorators import login_required
+from django.conf import settings
 
 from account.models import Player
 from account.views import InviteForm
 from game.models import Match, MatchPlayer, PlayerCannotJoinMatch, MatchIsFull, MatchInWrongStatus, \
-    MatchPlayerAlreadyReady, Map, BoardTokenType, TokenConversion, TokenValueConversion, MapCountry
+    MatchPlayerAlreadyReady, Map, BoardTokenType, TokenConversion, TokenValueConversion, MapCountry, MapRegion, Command
 
 
 class MatchCreationForm(forms.Form):
@@ -57,6 +59,7 @@ def match_invite(request, match_pk, player_pk=None):
             return HttpResponseRedirect(match.get_absolute_url())
         except PlayerCannotJoinMatch:
             messages.error(request, 'This player can not be invited')
+            return HttpResponseRedirect(reverse('game.views.match_invite', kwargs={'match_pk': match.id}))
         except MatchIsFull:
             messages.error(request, 'Match is full')
             return HttpResponseRedirect(match.get_absolute_url())
@@ -72,19 +75,30 @@ def match_invite(request, match_pk, player_pk=None):
 def view_match(request, match_pk):
     match = get_object_or_404(Match, pk=match_pk)
     player = Player.objects.get_by_user(request.user)
-    client_is_in_game = MatchPlayer.objects.get_by_match_and_player(match, player) in match.players.all()
+    match_player = MatchPlayer.objects.get_by_match_and_player(match, player)
+    client_is_in_game = match_player in match.players.all()
     is_owner = (player == match.owner)
     token_types = BoardTokenType.objects.all()
     conversions = TokenConversion.objects.all()
     value_conversions = TokenValueConversion.objects.all()
+    turn = match.latest_turn()
+    can_add_commands = \
+        False if match.status not in (Match.STATUS_PLAYING, Match.STATUS_PAUSED) else \
+            client_is_in_game and \
+            turn == match.latest_turn() and \
+            match_player.latest_player_in_turn().commands.count() < settings.COMMANDS_PER_TURN
 
     context = {
         'match': match,
+        'player': player,
+        'match_player': match_player,
         'client_is_in_game': client_is_in_game,
         'is_owner': is_owner,
         'token_types': token_types,
         'conversions': conversions,
         'value_conversions': value_conversions,
+        'turn': turn,
+        'can_add_commands': can_add_commands,
     }
 
     if not MatchPlayer.objects.filter(match=match, player=player).exists():
@@ -97,11 +111,10 @@ def view_match(request, match_pk):
         return render(request, 'game/play_match.html', context)
 
 
-def view_map(request, map_pk):
+def view_map(request, map_pk):  # TODO: move to model
     show_debug = request.GET.get('show_debug', False)
     show_links = request.GET.get('show_links', False)
 
-    # TODO: move to model
     map = get_object_or_404(Map, pk=map_pk)
 
     from PIL import Image, ImageDraw, ImageFont
@@ -146,8 +159,7 @@ def view_map(request, map_pk):
     return response
 
 
-def view_token(request, token_type_pk):
-    # TODO: move to model
+def view_token(request, token_type_pk):  # TODO: move to model
     token_type = get_object_or_404(BoardTokenType, pk=token_type_pk)
     from PIL import Image
 
@@ -172,6 +184,8 @@ def ready(request, match_pk):
     match = get_object_or_404(Match, pk=match_pk)
     player = Player.objects.get_by_user(request.user)
     match_player = MatchPlayer.objects.get_by_match_and_player(match, player)
+    if match_player is None:
+        messages.error(request, "You are not playing in this game")
     try:
         match_player.make_ready()
     except MatchPlayerAlreadyReady:
@@ -216,6 +230,8 @@ def kick(request, match_pk, player_pk):
 
     if player != match.owner:
         messages.error(request, "Only the match owner can kick players")
+    elif match_player_to_kick is None:
+        messages.error(request, "This player is not in this game")
     else:
         match_player_to_kick.kick()
 
@@ -231,4 +247,89 @@ def leave(request, match_pk):
         match_player.leave()
     else:
         messages.error(request, "You are not participating in that game")
+    return HttpResponseRedirect(match.get_absolute_url())
+
+
+@login_required
+def add_command(request, match_pk):  # TODO use django forms API
+    match = get_object_or_404(Match, pk=match_pk)
+    player = Player.objects.get_by_user(request.user)
+    match_player = MatchPlayer.objects.get_by_match_and_player(match, player)
+
+    if match_player is None:
+        messages.error(request, "You are not playing in this match")
+    elif request.method != 'POST':
+        messages.error(request, "Post me a command")
+    elif not match_player.latest_player_in_turn().commands.count() < settings.COMMANDS_PER_TURN:
+        messages.error(request, "You can not add more commands this turn")
+    else:
+
+        if request.POST.get('command_type') == 'move':
+            try:
+                token_type = BoardTokenType.objects.get(id=request.POST.get('move_token_type'))
+                region_from = MapRegion.objects.get(id=request.POST.get('move_region_from'))
+                region_to = MapRegion.objects.get(id=request.POST.get('move_region_to'))
+
+                if region_from.map_id != match.map_id or region_to.map_id != match.map_id:
+                    messages.error(request, "Invalid location(s)")
+
+                else:
+                    Command.objects.create(
+                        player_in_turn=match_player.latest_player_in_turn(),
+                        order=Command.objects.filter(player_in_turn=match_player.latest_player_in_turn()).count(),
+                        type=Command.TYPE_MOVEMENT,
+                        token_type=token_type,
+                        location=region_from,
+                        move_destination=region_to
+                    ).save()
+                    messages.success(request, "Added movement command")
+
+            except BoardTokenType.DoesNotExist:
+                messages.error(request, "Invalid token type")
+            except MapRegion.DoesNotExist:
+                messages.error(request, "Invalid location(s)")
+
+        elif request.POST.get('command_type') == 'buy':
+            try:
+                token_type = BoardTokenType.objects.get(id=request.POST.get('buy_token_type'))
+                if not token_type.purchasable:
+                    messages.error(request, "This token type cannot be purchased")
+
+                else:
+                    Command.objects.create(
+                        player_in_turn=match_player.latest_player_in_turn(),
+                        order=Command.objects.filter(player_in_turn=match_player.latest_player_in_turn()).count(),
+                        type=Command.TYPE_PURCHASE,
+                        token_type=token_type
+                    ).save()
+                    messages.success(request, "Added purchase command")
+
+            except BoardTokenType.DoesNotExist:
+                messages.error(request, "Invalid token type")
+
+        elif request.POST.get('command_type') == 'convert':
+            try:
+                conversion = TokenConversion.objects.get(id=request.POST.get('convert_id'))
+                location = MapRegion.objects.get(id=request.POST.get('convert_region'))
+                if location.map_id != match.map_id:
+                    messages.error(request, "Invalid location(s)")
+
+                else:
+                    Command.objects.create(
+                        player_in_turn=match_player.latest_player_in_turn(),
+                        order=Command.objects.filter(player_in_turn=match_player.latest_player_in_turn()).count(),
+                        type=Command.TYPE_CONVERSION,
+                        conversion=conversion,
+                        location=location
+                    ).save()
+                    messages.success(request, "Added conversion command")
+
+            except TokenConversion.DoesNotExist:
+                messages.error(request, "Invalid conversion")
+            except MapRegion.DoesNotExist:
+                messages.error(request, "Invalid location")
+
+        else:
+            messages.error(request, "Invalid command type")
+
     return HttpResponseRedirect(match.get_absolute_url())
