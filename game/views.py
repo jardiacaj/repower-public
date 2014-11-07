@@ -1,4 +1,5 @@
 from django import forms
+
 from django.contrib import messages
 from django.core.urlresolvers import reverse
 from django.http import HttpResponseRedirect, HttpResponse
@@ -7,9 +8,11 @@ from django.contrib.auth.decorators import login_required
 from django.conf import settings
 
 from account.models import Player
+
 from account.views import InviteForm
 from game.models import Match, MatchPlayer, PlayerCannotJoinMatch, MatchIsFull, MatchInWrongStatus, \
-    MatchPlayerAlreadyReady, Map, BoardTokenType, TokenConversion, TokenValueConversion, MapCountry, MapRegion, Command
+    MatchPlayerAlreadyReady, Map, BoardTokenType, TokenConversion, TokenValueConversion, MapCountry, MapRegion, Command, \
+    Turn, PlayerInTurn
 
 
 class MatchCreationForm(forms.Form):
@@ -72,21 +75,16 @@ def match_invite(request, match_pk, player_pk=None):
 
 
 @login_required
-def view_match(request, match_pk):
-    match = get_object_or_404(Match, pk=match_pk)
-    player = Player.objects.get_by_user(request.user)
-    match_player = MatchPlayer.objects.get_by_match_and_player(match, player)
-    client_is_in_game = match_player in match.players.all()
-    is_owner = (player == match.owner)
+def view_match(request, match_pk):  # TODO: match.can_view_match(player)
     token_types = BoardTokenType.objects.all()
     conversions = TokenConversion.objects.all()
     value_conversions = TokenValueConversion.objects.all()
-    turn = match.latest_turn()
-    can_add_commands = \
-        False if match.status not in (Match.STATUS_PLAYING, Match.STATUS_PAUSED) else \
-            client_is_in_game and \
-            turn == match.latest_turn() and \
-            match_player.latest_player_in_turn().commands.count() < settings.COMMANDS_PER_TURN
+
+    match = get_object_or_404(Match, pk=match_pk)
+    player = Player.objects.get_by_user(request.user)
+    match_player = MatchPlayer.objects.get_by_match_and_player(match, player)
+    is_owner = (player == match.owner)
+    client_is_in_game = match_player in match.players.all()
 
     context = {
         'match': match,
@@ -97,85 +95,74 @@ def view_match(request, match_pk):
         'token_types': token_types,
         'conversions': conversions,
         'value_conversions': value_conversions,
-        'turn': turn,
-        'can_add_commands': can_add_commands,
     }
+
+    if match.status in (Match.STATUS_FINISHED, Match.STATUS_ABORTED, Match.STATUS_PAUSED, Match.STATUS_PLAYING):
+        turn_number = request.GET.get('turn', match.latest_turn().number)
+        try:
+            turn = Turn.objects.get(match=match, number=turn_number)
+        except Turn.DoesNotExist:
+            turn = match.latest_turn()
+
+        player_in_turn = PlayerInTurn.objects.get(match_player__match=match, match_player__player=player, turn=turn)
+        is_latest_turn = turn == match.latest_turn()
+
+        context = dict(list(context.items()) + list({
+                                                        'player_in_turn': player_in_turn,
+                                                        'turn': turn,
+                                                        'is_latest_turn': is_latest_turn,
+                                                    }.items()))
+
+    context['can_add_commands'] = \
+        False if match.status not in (Match.STATUS_PLAYING, Match.STATUS_PAUSED) else \
+            client_is_in_game and \
+            is_latest_turn and \
+            player_in_turn.commands.count() < settings.COMMANDS_PER_TURN  # TODO: refactor
 
     if not MatchPlayer.objects.filter(match=match, player=player).exists():
         return HttpResponse("Viewing matches where you don't participate is not yet implemented")  # TODO
     elif match.status == match.STATUS_SETUP_ABORTED:
         return HttpResponse("Viewing aborted matches is not yet implemented")  # TODO
+    elif match.status == match.STATUS_FINISHED:
+        return HttpResponse("Viewing finished matches is not yet implemented")  # TODO
     elif match.status == match.STATUS_SETUP:
         return render(request, 'game/setup_match.html', context)
     elif match.status == match.STATUS_PLAYING:
         return render(request, 'game/play_match.html', context)
 
 
-def view_map(request, map_pk):  # TODO: move to model
-    show_debug = request.GET.get('show_debug', False)
-    show_links = request.GET.get('show_links', False)
+@login_required()
+def view_map_in_match(request, match_pk):  # TODO: match.can_view_match(player)
+    match = get_object_or_404(Match, pk=match_pk)
 
-    map = get_object_or_404(Map, pk=map_pk)
+    turn_number = request.GET.get('turn', match.latest_turn().number)
+    try:
+        turn = Turn.objects.get(match=match, number=turn_number)
+    except Turn.DoesNotExist:
+        turn = match.latest_turn()
 
-    from PIL import Image, ImageDraw, ImageFont
-
-    image = Image.open('game/static/game/%s-play.png' % map.image_file_name)
-    draw = ImageDraw.Draw(image)
-    font = ImageFont.load_default()
-
-    for region in map.regions.all():
-        if region.render_on_map:
-            if not show_debug:
-                draw.text((region.position_x + 5, region.position_y + 5), region.name, font=font, fill=(0, 0, 0))
-            else:
-                text1 = "%s / %s" % (
-                    region.name,
-                    region.short_name,
-                )
-                text2 = "%s %s%s" % (
-                    region.country.name if region.country else "-",
-                    "L" if region.land else "",
-                    "W" if region.water else "",
-                )
-                draw.text((region.position_x + 5, region.position_y + 5), text1, font=font, fill=(0, 0, 0))
-                draw.text((region.position_x + 5, region.position_y + 15), text2, font=font, fill=(0, 0, 0))
-            if show_links:
-                for link in region.links_source.all():
-                    if link.destination.render_on_map:
-                        fill = 0
-                        if link.crossing_water:
-                            fill = 255
-                        draw.line(
-                            (region.position_x + region.size_x / 2,
-                             region.position_y + region.size_y / 2,
-                             link.destination.position_x + link.destination.size_x / 2,
-                             link.destination.position_y + link.destination.size_y / 2),
-                            fill=fill
-                        )
-
-    del draw
     response = HttpResponse(content_type="image/png")
-    image.save(response, "PNG")
+    match.map.image_in_match(turn).save(response, "PNG")
     return response
 
 
-def view_token(request, token_type_pk):  # TODO: move to model
-    token_type = get_object_or_404(BoardTokenType, pk=token_type_pk)
-    from PIL import Image
+def view_map(request, map_pk):
+    show_debug = request.GET.get('show_debug', False)
+    show_links = request.GET.get('show_links', False)
+    response = HttpResponse(content_type="image/png")
+    get_object_or_404(Map, pk=map_pk).image(show_debug, show_links).save(response, "PNG")
+    return response
 
-    source = Image.open('game/static/game/%s.gif' % token_type.image_file_name)
-    pixel_data = source.load()
 
+def view_token(request, token_type_pk):
     country_pk = request.GET.get('country', None)
     if country_pk is not None:
         country = MapCountry.objects.get(pk=country_pk)
-        for y in range(source.size[0]):
-            for x in range(source.size[1]):
-                if pixel_data[x, y] == 14:
-                    pixel_data[x, y] = country.color_gif_palette
+    else:
+        country = None
 
     response = HttpResponse(content_type="image/png")
-    source.save(response, "PNG")
+    get_object_or_404(BoardTokenType, pk=token_type_pk).image(country).save(response, "PNG")
     return response
 
 

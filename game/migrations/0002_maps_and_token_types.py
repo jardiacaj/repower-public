@@ -5,7 +5,8 @@ from game.models import Map, MapCountry, MapRegion, MapRegionLink, BoardTokenTyp
 
 def insert_token_types(apps, schema_editor):
     infantry = BoardTokenType(name="Infantry", short_name="IN", movements=2, strength=2, purchasable=True,
-                              one_water_cross_per_movement=True, can_be_on_land=True, image_file_name="infantry")
+                              one_water_cross_per_movement=True, can_be_on_land=True, image_file_name="infantry",
+                              can_capture_flag=True)
     infantry.save()
     small_tank = BoardTokenType(name="Small Tank", short_name="S-T", movements=3, strength=3, purchasable=True,
                                 one_water_cross_per_movement=True, can_be_on_land=True, image_file_name="small-tank")
@@ -18,7 +19,8 @@ def insert_token_types(apps, schema_editor):
     destroyer.save()
 
     regiment = BoardTokenType(name="Regiment", short_name="REG", movements=2, strength=20, purchasable=False,
-                              one_water_cross_per_movement=True, can_be_on_land=True, image_file_name="regiment")
+                              one_water_cross_per_movement=True, can_be_on_land=True, image_file_name="regiment",
+                              can_capture_flag=True)
     regiment.save()
     tank = BoardTokenType(name="Tank", short_name="TNK", movements=3, strength=30, purchasable=False,
                           one_water_cross_per_movement=True, can_be_on_land=True, image_file_name="tank")

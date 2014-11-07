@@ -107,7 +107,7 @@ class LoginTests(TestCase):
 
 
 class InviteTests(TestCase):
-    @skipIf(settings.SKIP_SLOW_TESTS, "Slow test")
+    @skipIf(settings.SKIP_MAIL_TESTS, "Mail test")
     def test_send_invite(self):
         create_test_users()
         create_not_player()
@@ -154,7 +154,7 @@ class InviteTests(TestCase):
         self.assertContains(response, "You used up all your invites")
         self.assertFalse(Invite.objects.filter(email="test3@localhost").exists())
 
-    @skipIf(settings.SKIP_SLOW_TESTS, "Slow test")
+    @skipIf(settings.SKIP_MAIL_TESTS, "Mail test")
     def test_send_and_accept_invite(self):
         create_test_users()
         response = self.client.post(reverse('account.views.login'),

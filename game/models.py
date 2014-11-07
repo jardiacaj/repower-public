@@ -1,3 +1,6 @@
+from collections import defaultdict
+from math import floor
+
 from django.core.exceptions import ValidationError
 from django.core.urlresolvers import reverse
 from django.db import models
@@ -10,7 +13,6 @@ from account.models import Player
 
 
 # TODO sensible DB indexes
-
 
 class PlayerCannotJoinMatch(Exception):
     pass
@@ -38,6 +40,58 @@ class Map(models.Model):
     image_file_name = models.CharField(max_length=30)
     public = models.BooleanField(default=False, help_text="Public maps can be used when players set up a new match")
 
+    def image_in_match(self, turn):  # TODO: fix transparency
+        map_image = self.image(False, False)
+        tokens_per_region = defaultdict(lambda: 0)
+        for token in BoardToken.objects.filter(owner__turn=turn):
+            if not token.position.render_on_map:
+                continue
+            token_image = token.image()
+            x = token.position.position_x + 5 + ((tokens_per_region[token.position_id] % 4) * 20)
+            y = token.position.position_y + 20 + (floor(tokens_per_region[token.position_id] / 4) * 20)
+            map_image.paste(token_image, (x, y))
+            tokens_per_region[token.position_id] += 1
+        return map_image
+
+    def image(self, show_debug, show_links):
+        from PIL import Image, ImageDraw, ImageFont
+
+        image = Image.open('game/static/game/%s-play.png' % self.image_file_name)
+        draw = ImageDraw.Draw(image)
+        font = ImageFont.load_default()
+
+        for region in self.regions.all():
+            if region.render_on_map:
+                if not show_debug:
+                    draw.text((region.position_x + 5, region.position_y + 5), region.name, font=font, fill=(0, 0, 0))
+                else:
+                    text1 = "%s / %s" % (
+                        region.name,
+                        region.short_name,
+                    )
+                    text2 = "%s %s%s" % (
+                        region.country.name if region.country else "-",
+                        "L" if region.land else "",
+                        "W" if region.water else "",
+                    )
+                    draw.text((region.position_x + 5, region.position_y + 5), text1, font=font, fill=(0, 0, 0))
+                    draw.text((region.position_x + 5, region.position_y + 15), text2, font=font, fill=(0, 0, 0))
+                if show_links:
+                    for link in region.links_source.all():
+                        if link.destination.render_on_map:
+                            fill = 0
+                            if link.crossing_water:
+                                fill = 255
+                            draw.line(
+                                (region.position_x + region.size_x / 2,
+                                 region.position_y + region.size_y / 2,
+                                 link.destination.position_x + link.destination.size_x / 2,
+                                 link.destination.position_y + link.destination.size_y / 2),
+                                fill=fill
+                            )
+        del draw
+        return image
+
     def __str__(self):
         return "%s (%d players)" % (self.name, self.num_seats)
 
@@ -48,8 +102,8 @@ class MapCountry(models.Model):
 
     map = models.ForeignKey(Map, related_name='countries')
     name = models.CharField(max_length=30)
-    reserve = models.ForeignKey('MapRegion', related_name='countries_with_this_reserve')
-    headquarters = models.ForeignKey('MapRegion', related_name='countries_with_this_headquarter')
+    reserve = models.ForeignKey('MapRegion', related_name='countries_with_this_reserve', unique=True)
+    headquarters = models.ForeignKey('MapRegion', related_name='countries_with_this_headquarter', unique=True)
     color_rgb = models.CharField(max_length=6)
     color_gif_palette = models.PositiveSmallIntegerField()
 
@@ -69,6 +123,9 @@ class MapRegion(models.Model):
     position_y = models.PositiveSmallIntegerField(default=0)
     size_x = models.PositiveSmallIntegerField(default=0)
     size_y = models.PositiveSmallIntegerField(default=0)
+
+    def usable_links(self):
+        return self.links_source.all() | self.links_destination.exclude(unidirectional=True)
 
     def __str__(self):
         return "%s in %s" % (self.name, self.map.name)
@@ -96,6 +153,9 @@ class Turn(models.Model):
     start = models.DateTimeField(auto_now_add=True)
     end = models.DateTimeField(blank=True, null=True)
 
+    def players(self):
+        return PlayerInTurn.objects.filter(turn=self)
+
     def is_latest(self):
         return not self.objects.filter(match=self.match, number__gt=self.number).exists()
 
@@ -115,10 +175,23 @@ class BoardTokenType(models.Model):
     one_water_cross_per_movement = models.BooleanField(default=False)
     can_be_on_land = models.BooleanField(default=False)
     can_be_on_water = models.BooleanField(default=False)
+    can_capture_flag = models.BooleanField(default=False)
 
     special_missile = models.BooleanField(default=False)
     special_attack_reserves = models.BooleanField(default=False, help_text="Can attack reserves")
     special_destroys_all = models.BooleanField(default=False, help_text="Infinite strength, beats all")
+
+    def image(self, country):
+        from PIL import Image
+
+        image = Image.open('game/static/game/%s.gif' % self.image_file_name)
+        pixel_data = image.load()
+        if country is not None:
+            for y in range(image.size[0]):
+                for x in range(image.size[1]):
+                    if pixel_data[x, y] == 14:
+                        pixel_data[x, y] = country.color_gif_palette
+        return image
 
     def __str__(self):
         return self.name
@@ -148,11 +221,14 @@ class PlayerInTurn(models.Model):
     turn = models.ForeignKey(Turn)
     match_player = models.ForeignKey('MatchPlayer', related_name='+')
     power_points = models.PositiveSmallIntegerField()
-    flag_controlled_by = models.ForeignKey('MatchPlayer', related_name='+', blank=True, null=True)
+    defeated = models.BooleanField(default=False)
     total_strength = models.PositiveIntegerField(default=0)
     timeout_requested = models.BooleanField(default=False)
     ready = models.BooleanField(default=False)
     left_match = models.BooleanField(default=False)
+
+    def tokens_in_reserve(self):
+        return BoardToken.objects.filter(owner=self, position=self.match_player.country.reserve)
 
     def calculate_total_strength(self):
         self.total_strength = self.tokens.aggregate(Sum('type__strength'))['type__strength__sum']
@@ -183,6 +259,9 @@ class BoardToken(models.Model):
     can_move_this_turn = models.BooleanField(default=True)
     retreat_from_draw = models.BooleanField(default=False)
 
+    def image(self):
+        return self.type.image(self.owner.match_player.country)
+
     def __str__(self):
         return "%s in %s from %s" % (self.type.name, self.position.name, self.owner)
 
@@ -203,13 +282,18 @@ class Command(models.Model):
     order = models.PositiveSmallIntegerField()
     type = models.CharField(max_length=3, choices=TYPES)
     location = models.ForeignKey(MapRegion, null=True, blank=True, related_name='+')
-    valid = models.NullBooleanField()
     token_type = models.ForeignKey(BoardTokenType, null=True, blank=True, related_name='+')
+    valid = models.NullBooleanField()
+    reverted_in_draw = models.BooleanField(default=False)
 
     move_destination = models.ForeignKey(MapRegion, null=True, blank=True, related_name='+')
     conversion = models.ForeignKey(TokenConversion, null=True, blank=True, related_name='+')
     value_conversion = models.ForeignKey(TokenConversion, null=True, blank=True, related_name='+')
     # TODO Value conversion token types
+
+    # TODO def is_valid(self): use for command validation on add
+    # TODO def is_doable(self): use for command validation on process
+    # TODO def execute(self): use for command execution
 
     def in_game_str(self):
         if self.type == self.TYPE_MOVEMENT:
@@ -279,9 +363,14 @@ class Match(models.Model):
             raise MatchInWrongStatus()
         if self.map.num_seats == self.players.count():
             all_ready = True
-            for player in self.players.all():
-                if not player.setup_ready:
-                    all_ready = False
+            if self.status == self.STATUS_SETUP or (self.STATUS_PAUSED and self.latest_turn() is None):
+                for player in self.players.all():
+                    if not player.setup_ready:
+                        all_ready = False
+            if self.status == self.STATUS_PLAYING or (self.STATUS_PAUSED and self.latest_turn() is not None):
+                for player in self.players.all():
+                    if not player.latest_player_in_turn().ready:
+                        all_ready = False
             if all_ready:
                 self.all_players_ready()
 
@@ -312,7 +401,7 @@ class Match(models.Model):
             player.country = countries[i]
             player.save()
 
-            player_in_turn = PlayerInTurn(turn=turn, match_player=player, power_points=0, flag_controlled_by=player)
+            player_in_turn = PlayerInTurn(turn=turn, match_player=player, power_points=0)
             player_in_turn.save()
 
             starting_tokens = (
@@ -331,22 +420,250 @@ class Match(models.Model):
         self.status = self.STATUS_PLAYING
         self.save()
 
-    transition_from_setup_to_playing.alters_data = True
+    def process_turn(self):  # TODO: refactor
+        # Create new turn
+        outgoing_turn = self.latest_turn()
+        incoming_turn = Turn.objects.create(match=self, number=outgoing_turn.number + 1)
+        incoming_turn.save()
 
-    def process_turn(self):
-        pass
-        # TODO Process movements
-        # TODO tokens only one move per round, except from reserve
-        # TODO cannot move to same tile except missiles
-        # TODO if no valid movements, substract power point
-        # TODO Process battles
-        # TODO Calculate forces
-        # TODO Winner: capture (Missiles don't capture, infinite strength missiles destroy power points)
-        # TODO Draw: retreat, recurse
-        #TODO Collect power points, one per country with flag
-        #TODO Flag capture (including tokens and power points)
-        # TODO Check victory
+        # Clone players
+        for player in PlayerInTurn.objects.filter(turn=outgoing_turn):
+            player.pk = None
+            player.turn = incoming_turn
+            player.ready = False
+            player.save(force_insert=True)
 
+        # Clone tokens
+        for token in BoardToken.objects.filter(owner__in=PlayerInTurn.objects.filter(turn=outgoing_turn)):
+            token.pk = None
+            token.moved_this_turn = False
+            token.can_move_this_turn = True
+            token.retreat_from_draw = False
+            token.owner = PlayerInTurn.objects.get(match_player=token.owner.match_player, turn=incoming_turn)
+            token.save(force_insert=True)
+
+        # Process commands
+        for outgoing_player_in_turn in PlayerInTurn.objects.filter(turn=outgoing_turn):
+            incoming_player_in_turn = PlayerInTurn.objects.get(turn=incoming_turn,
+                                                               match_player=outgoing_player_in_turn.match_player)
+            for command in outgoing_player_in_turn.commands.all().order_by('order'):
+
+                if command.type == Command.TYPE_MOVEMENT:
+                    token = BoardToken.objects.filter(owner__turn=incoming_turn,
+                                                      type=command.token_type,
+                                                      position=command.location).first()
+                    if token is None or not token.can_move_this_turn:
+                        command.valid = False
+                    elif self.check_map_path(token, command.location, command.move_destination):
+                        token.position = command.move_destination
+                        token.moved_this_turn = True
+                        if command.location == incoming_player_in_turn.match_player.country.reserve and \
+                                        command.move_destination == incoming_player_in_turn.match_player.country.headquarters:
+                            token.can_move_this_turn = True
+                        else:
+                            token.can_move_this_turn = False
+                        token.save()
+                        command.valid = True
+                    else:
+                        command.valid = False
+
+                elif command.type == Command.TYPE_PURCHASE:
+                    if not command.token_type.purchasable:
+                        command.valid = False
+                    elif command.token_type.strength > incoming_player_in_turn.power_points:
+                        command.valid = False
+                    else:
+                        incoming_player_in_turn.power_points -= command.token_type.strength
+                        incoming_player_in_turn.save()
+                        BoardToken.objects.create(
+                            type=command.token_type,
+                            position=incoming_player_in_turn.match_player.country.reserve,
+                            owner=incoming_player_in_turn
+                        )
+                        command.valid = True
+
+                elif command.type == Command.TYPE_CONVERSION:
+                    consumable = BoardToken.objects.filter(
+                        owner=incoming_player_in_turn,
+                        type=command.conversion.needs,
+                        position=command.location
+                    ).order_by('can_move_this_turn')
+
+                    if consumable.count() < command.conversion.needs_quantity:
+                        command.valid = False
+                    else:
+                        for t in consumable[:command.conversion.needs_quantity]:
+                            t.delete()
+                        for i in range(command.conversion.produces_quantity):
+                            BoardToken.objects.create(
+                                type=command.conversion.produces,
+                                position=command.location,
+                                owner=incoming_player_in_turn,
+                                can_move_this_turn=
+                                command.location == incoming_player_in_turn.match_player.country.reserve
+                            )
+                        command.valid = True
+
+                else:
+                    raise AssertionError("Invalid command type")
+
+                command.save()
+
+            # if no valid movements, substract power point
+            valid_command = False
+            for command in outgoing_player_in_turn.commands.all():
+                if command.valid:
+                    valid_command = True
+            if not valid_command and incoming_player_in_turn.power_points > 0:
+                incoming_player_in_turn.power_points -= 1
+                incoming_player_in_turn.save()
+
+        # Process battles
+        while True:  # TODO: add maximum iterations?
+            token_retreated = False
+            for region in self.map.regions.all():  # TODO: optimizable with group by
+                tokens_in_region = BoardToken.objects.filter(owner__turn=incoming_turn, position=region)
+                if tokens_in_region.count() > 1:
+                    # Sort tokens per owner
+                    tokens_per_player = defaultdict(list)
+                    for token in tokens_in_region:
+                        tokens_per_player[token.owner_id].append(token)
+                    if len(tokens_per_player) > 1:
+                        # There is a battle
+                        # TODO If infinite strength token present, it wins. If missile, it kills every token (no capture)
+                        # TODO: missiles do not capture!
+
+                        # No infinite strength tokens, sort players by force
+                        players_by_force = defaultdict(list)
+                        for player_in_battle, tokens in tokens_per_player.items():
+                            # Add up force, missiles only count if fired this turn
+                            players_by_force[
+                                sum(token.type.strength for token in tokens
+                                    if not token.type.special_missile or
+                                    (token.type.special_missile and token.move_this_turn))
+                            ].append(player_in_battle)
+
+                        winners = PlayerInTurn.objects.filter(id__in=players_by_force[max(players_by_force.keys())])
+
+                        if len(winners) == 1:
+                            # Single winner case, capture tokens
+                            # TODO: missiles do not capture!
+                            winner = winners[0]
+                            for token in tokens_in_region:
+                                if token.owner != winner:
+                                    token.owner = winner
+                                    token.position = winner.match_player.country.reserve
+                                    token.save()
+                        elif len(winners) > 1:
+                            # Draw: retreat winner forces
+                            for token in tokens_in_region:
+                                if token.owner in winners and not token.retreat_from_draw:
+                                    revertable_command = Command.objects.filter(
+                                        player_in_turn__match_player=token.owner.match_player,
+                                        player_in_turn__turn=outgoing_turn,
+                                        valid=True,
+                                        reverted_in_draw=False,
+                                        type=Command.TYPE_MOVEMENT,
+                                        move_destination=token.position,
+                                        token_type=token.type
+                                    ).first()
+                                    if revertable_command is not None:
+                                        revertable_command.reverted_in_draw = True
+                                        revertable_command.save()
+                                        token.position = revertable_command.location
+                                        token.retreat_from_draw = True
+                                        token.save()
+                                        token_retreated = True
+            if not token_retreated:
+                break
+
+        # Delete shot missiles and steal power points from shot infinite strength missiles
+        for missile in BoardToken.objects.filter(owner__turn=incoming_turn,
+                                                 type__special_missile=True,
+                                                 moved_this_turn=True):
+            reserve_of = missile.location.countries_with_this_reserve.first()
+            if missile.special_destroys_all and reserve_of:
+                steal_from = PlayerInTurn.objects.filter(turn=incoming_turn, match_player__country=reserve_of)
+                missile.owner.power_points += steal_from.power_points
+                missile.owner.save()
+                steal_from.power_points = 0
+                steal_from.save()
+            missile.delete()
+
+        # Flag capture (including tokens and power points)
+        for match_player in (match_player for match_player in self.players.all() if not match_player.defeated):
+            player_in_turn = match_player.latest_player_in_turn()
+            defeater_token = BoardToken.objects.filter(owner__turn=incoming_turn,
+                                                       type__can_capture_flag=True,
+                                                       position=match_player.country.headquarters) \
+                .exclude(owner=player_in_turn).first()
+            if defeater_token is not None:
+                defeater = defeater_token.owner
+                defeater.power_points += player_in_turn.power_points
+                defeater.save()
+                player_in_turn.power_points = 0
+                player_in_turn.defeated = True
+                player_in_turn.save()
+                match_player.defeated = True
+                match_player.save()
+                captured_tokens = BoardToken.objects.filter(owner=player_in_turn)
+                for token in captured_tokens:
+                    token.owner = defeater
+                    token.position = defeater.match_player.country.reserve
+                    token.save()
+
+        # TODO Players without power points or tokens are defeated
+
+        # Check end of game
+        remaining_players = [match_player
+                             for match_player
+                             in self.players.all()
+                             if not match_player.defeated and not match_player.left_match]
+
+        if len(remaining_players) == 1:
+            self.status = self.STATUS_FINISHED
+        elif len(remaining_players) == 0:
+            self.status = self.STATUS_FINISHED
+        self.save()
+
+        # Collect power points
+        for player_in_turn in PlayerInTurn.objects.filter(turn=incoming_turn):
+            countries = list()
+            for token in BoardToken.objects.filter(owner=player_in_turn).exclude(
+                    position__country=player_in_turn.match_player.country):
+                if token.position.country is not None and token.position.country not in countries:
+                    countries.append(token.position.country)
+            player_in_turn.power_points += len(countries)
+            player_in_turn.save()
+
+    @staticmethod
+    def check_map_path(token, source, destination):
+        def check_path(token, source, destination, movements_left, crossed_water):
+            if source == destination:
+                return True
+            if movements_left == 0:
+                return False
+            for link in source.usable_links():
+                if link.crossing_water and (
+                                not token.type.can_be_on_water and crossed_water and token.type.one_water_cross_per_movement):
+                    pass
+                else:
+                    links_to = link.destination if link.source == source else link.source
+                    if ((links_to.water and token.type.can_be_on_water) or (
+                                links_to.land and token.type.can_be_on_land) ) and \
+                            check_path(token, links_to, destination, movements_left - 1,
+                                       crossed_water or link.crossing_water):
+                        return True
+            return False
+
+        if destination.countries_with_this_reserve.exists() and not token.type.special_attack_reserves:
+            return False
+        if source == destination and not token.special_missile:
+            return False
+        if source.countries_with_this_reserve.exists():
+            return destination.countries_with_this_headquarter.exists() and \
+                   destination.countries_with_this_headquarter.first() == source.countries_with_this_reserve.first()
+        return check_path(token, source, destination, token.type.movements, False)
 
     def get_absolute_url(self):
         return reverse('game.views.view_match', kwargs={'match_pk': self.pk})
