@@ -17,7 +17,8 @@ class InviteForm(forms.Form):
     email = forms.EmailField(label='Invite by e-mail')
 
 
-class RespondInviteForm(forms.Form):  # TODO add username
+class RespondInviteForm(forms.Form):
+    username = forms.CharField(label='User name')
     password = forms.CharField(label='Password', widget=forms.PasswordInput)
     password_confirm = forms.CharField(label='Confirm password', widget=forms.PasswordInput)
 
@@ -88,7 +89,7 @@ def invite(request):
                     If you do not want to join Repower, simply ignore this message.
 
                     Love''' %
-                    (request.user.username, reverse('account.views.respond_invite', kwargs={'code': new_invite.code})),
+                    (request.user.username, new_invite.get_absolute_url()),
 
                     settings.INVITE_MAIL_SENDER_ADDRESS,
                     [email],
@@ -120,12 +121,15 @@ def respond_invite(request, code):
     if request.method == 'POST':
         form = RespondInviteForm(data=request.POST)
         if form.is_valid():
+            username = request.POST.get('username')
             password = request.POST.get('password')
             password_confirm = request.POST.get('password_confirm')
             if password != password_confirm:
                 messages.error(request, 'Your passwords do not match')
+            elif User.objects.filter(username=username).exists():
+                messages.error(request, "This user name is alredy taken. Please choose a different one")
             else:
-                new_player = invite.create_player(password)
+                new_player = invite.create_player(username, password)
                 messages.success(request, 'Success! Please log in')
                 return HttpResponseRedirect(reverse('Repower.views.home'))
     else:

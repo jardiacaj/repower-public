@@ -39,11 +39,7 @@
         {% for player_in_turn in turn.players.all %}
             <br>
 
-            {% if player_in_turn.ready %}
-                ☑
-            {% else %}
-                ☐
-            {% endif %}
+            {{ player_in_turn.status_box }}
 
             <span style="font-weight: bold; color: #{{ player_in_turn.match_player.country.color_rgb }};">
                 {{ player_in_turn.total_strength }}

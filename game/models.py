@@ -1,12 +1,14 @@
 from collections import defaultdict
 from math import floor
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.urlresolvers import reverse
 from django.db import models
 from django.db.models import Sum
 
 from account.models import Player
+
 
 
 
@@ -39,6 +41,35 @@ class Map(models.Model):
     name = models.CharField(max_length=30)
     image_file_name = models.CharField(max_length=30)
     public = models.BooleanField(default=False, help_text="Public maps can be used when players set up a new match")
+
+    @staticmethod
+    def check_map_path(token, source, destination):
+        def check_path(token, source, destination, movements_left, crossed_water):
+            if source == destination:
+                return True
+            if movements_left == 0:
+                return False
+            for link in source.usable_links():
+                if link.crossing_water and (
+                                not token.type.can_be_on_water and crossed_water and token.type.one_water_cross_per_movement):
+                    pass
+                else:
+                    links_to = link.destination if link.source == source else link.source
+                    if ((links_to.water and token.type.can_be_on_water) or (
+                                links_to.land and token.type.can_be_on_land) ) and \
+                            check_path(token, links_to, destination, movements_left - 1,
+                                       crossed_water or link.crossing_water):
+                        return True
+            return False
+
+        if destination.countries_with_this_reserve.exists() and not token.type.special_attack_reserves:
+            return False
+        if source == destination and not token.special_missile:
+            return False
+        if source.countries_with_this_reserve.exists():
+            return destination.countries_with_this_headquarter.exists() and \
+                   destination.countries_with_this_headquarter.first() == source.countries_with_this_reserve.first()
+        return check_path(token, source, destination, token.type.movements, False)
 
     def image_in_match(self, turn):  # TODO: fix transparency
         map_image = self.image(False, False)
@@ -227,6 +258,55 @@ class PlayerInTurn(models.Model):
     ready = models.BooleanField(default=False)
     left_match = models.BooleanField(default=False)
 
+    def status_box(self):
+        return "☑" if self.ready else "☐"
+
+    def can_add_commands(self):
+        if not self.is_latest():
+            return False
+        elif self.defeated or self.left_match:
+            return False
+        elif not self.match_player.match.is_in_progress():
+            return False
+        elif Command.objects.filter(player_in_turn=self).count() >= settings.COMMANDS_PER_TURN:
+            return False
+        return True
+
+    def set_defeated(self):
+        self.defeated = True
+        self.save()
+        self.match_player.defeated = True
+        self.match_player.save()
+
+    def check_and_process_defeat(self):
+        defeater_token = BoardToken.objects.filter(owner__turn=self.turn,
+                                                   type__can_capture_flag=True,
+                                                   position=self.match_player.country.headquarters) \
+            .exclude(owner=self).first()
+        if defeater_token is not None:
+            defeater = defeater_token.owner
+            defeater.power_points += self.power_points
+            defeater.save()
+            self.power_points = 0
+            self.set_defeated()
+            captured_tokens = BoardToken.objects.filter(owner=self)
+            for token in captured_tokens:
+                token.owner = defeater
+                token.position = defeater.match_player.country.reserve
+                token.save()
+        else:
+            if not BoardToken.objects.filter(owner=self).exists() and self.power_points == 0:
+                self.set_defeated()
+
+    def collect_power_points(self):
+        countries = list()
+        for token in BoardToken.objects.filter(owner=self).exclude(
+                position__country=self.match_player.country):
+            if token.position.country is not None and token.position.country not in countries:
+                countries.append(token.position.country)
+        self.power_points += len(countries)
+        self.save()
+
     def tokens_in_reserve(self):
         return BoardToken.objects.filter(owner=self, position=self.match_player.country.reserve)
 
@@ -235,16 +315,31 @@ class PlayerInTurn(models.Model):
         return self.total_strength
 
     def make_ready(self):
-        if self.match_player.match.status not in (Match.STATUS_PLAYING, Match.STATUS_PAUSED):
+        if not self.match_player.match.is_in_progress():
             raise MatchInWrongStatus()
         if self.ready:
-            raise MatchPlayerAlreadyReady
+            raise MatchPlayerAlreadyReady()
         self.ready = True
         self.save()
         self.match_player.match.check_all_players_ready()
 
     def is_latest(self):
-        return not self.objects.filter(match=self.match, number__gt=self.number).exists()
+        return not PlayerInTurn.objects.filter(match_player=self.match_player,
+                                               turn__number__gt=self.turn.number).exists()
+
+    def leave(self):
+        if not self.match_player.is_active() or not self.match_player.match.is_in_progress() or self.left_match or self.defeated:
+            assert False
+        self.left_match = True
+        self.ready = True
+        self.power_points = 0
+        self.save()
+        self.match_player.left_match = True
+        self.match_player.save()
+        self.match_player.match.check_and_process_end_of_game()
+        BoardToken.objects.filter(owner=self).delete()
+        if self.match_player.match.is_in_progress():
+            self.match_player.match.check_all_players_ready()
 
     def __str__(self):
         return "%s in %s (turn %d)" % (
@@ -267,6 +362,15 @@ class BoardToken(models.Model):
 
 
 class Command(models.Model):
+    class InvalidLocation(Exception):
+        pass
+
+    class TokenNotPurchasable(Exception):
+        pass
+
+    class InvalidCommandType(Exception):
+        pass
+
     TYPE_MOVEMENT = 'MOV'
     TYPE_CONVERSION = 'TCO'
     TYPE_VALUE_CONVERSION = 'VCO'
@@ -291,9 +395,101 @@ class Command(models.Model):
     value_conversion = models.ForeignKey(TokenConversion, null=True, blank=True, related_name='+')
     # TODO Value conversion token types
 
-    # TODO def is_valid(self): use for command validation on add
-    # TODO def is_doable(self): use for command validation on process
-    # TODO def execute(self): use for command execution
+    def can_be_added(self):
+        if self.type == Command.TYPE_MOVEMENT:
+            if self.location.map_id != self.player_in_turn.match_player.match.map_id or \
+                            self.move_destination.map_id != self.player_in_turn.match_player.match.map_id:
+                raise Command.InvalidLocation()
+        elif self.type == Command.TYPE_PURCHASE:
+            if not self.token_type.purchasable:
+                raise Command.TokenNotPurchasable()
+        elif self.type == Command.TYPE_CONVERSION:
+            if self.location.map_id != self.player_in_turn.match_player.match.map_id:
+                raise Command.InvalidLocation()
+        else:
+            raise Command.InvalidCommandType()
+        return True
+
+    def is_valid(self, incoming_turn, incoming_player_in_turn):
+        if self.type == Command.TYPE_MOVEMENT:
+            token = BoardToken.objects.filter(owner__turn=incoming_turn,
+                                              type=self.token_type,
+                                              position=self.location).first()
+            if token is None or not token.can_move_this_turn:
+                return False
+            elif not Map.check_map_path(token, self.location, self.move_destination):
+                return False
+            else:
+                return True
+
+        elif self.type == Command.TYPE_PURCHASE:
+            if not self.token_type.purchasable:
+                return False
+            elif self.token_type.strength > incoming_player_in_turn.power_points:
+                return False
+            else:
+                return True
+
+        elif self.type == Command.TYPE_CONVERSION:
+            consumable = BoardToken.objects.filter(
+                owner=incoming_player_in_turn,
+                type=self.conversion.needs,
+                position=self.location
+            ).order_by('can_move_this_turn')
+
+            if consumable.count() < self.conversion.needs_quantity:
+                return False
+            else:
+                return True
+
+        else:
+            raise Command.InvalidCommandType()
+
+    def execute(self, incoming_turn, incoming_player_in_turn):
+        assert self.valid
+
+        if self.type == Command.TYPE_MOVEMENT:
+            token = BoardToken.objects.filter(owner__turn=incoming_turn,
+                                              type=self.token_type,
+                                              position=self.location).first()
+            token.position = self.move_destination
+            token.moved_this_turn = True
+            if self.location == incoming_player_in_turn.match_player.country.reserve and \
+                            self.move_destination == incoming_player_in_turn.match_player.country.headquarters:
+                token.can_move_this_turn = True
+            else:
+                token.can_move_this_turn = False
+            token.save()
+
+        elif self.type == Command.TYPE_PURCHASE:
+            incoming_player_in_turn.power_points -= self.token_type.strength
+            incoming_player_in_turn.save()
+            BoardToken.objects.create(
+                type=self.token_type,
+                position=incoming_player_in_turn.match_player.country.reserve,
+                owner=incoming_player_in_turn
+            )
+
+        elif self.type == Command.TYPE_CONVERSION:
+            consumable = BoardToken.objects.filter(
+                owner=incoming_player_in_turn,
+                type=self.conversion.needs,
+                position=self.location
+            ).order_by('can_move_this_turn')
+
+            for t in consumable[:self.conversion.needs_quantity]:
+                t.delete()
+            for i in range(self.conversion.produces_quantity):
+                BoardToken.objects.create(
+                    type=self.conversion.produces,
+                    position=self.location,
+                    owner=incoming_player_in_turn,
+                    can_move_this_turn=
+                    self.location == incoming_player_in_turn.match_player.country.reserve
+                )
+
+        else:
+            raise Command.InvalidCommandType()
 
     def in_game_str(self):
         if self.type == self.TYPE_MOVEMENT:
@@ -346,8 +542,17 @@ class Match(models.Model):
     time_limit = models.DateTimeField(blank=True, null=True)  # TODO: use this
     round_time_limit = models.DateTimeField(blank=True, null=True)  # TODO: use this
 
+    def is_in_progress(self):
+        return self.status in (Match.STATUS_PLAYING, Match.STATUS_PAUSED)
+
+    def has_started(self):
+        return self.status in (Match.STATUS_FINISHED, Match.STATUS_ABORTED, Match.STATUS_PAUSED, Match.STATUS_PLAYING)
+
     def latest_turn(self):
         return Turn.objects.filter(match=self).order_by('-number').first()
+
+    def can_view_match(self, player):
+        return self.public or player in [player.player for player in self.players.all()]
 
     def join_player(self, player):
         if self.status != self.STATUS_SETUP:
@@ -363,13 +568,13 @@ class Match(models.Model):
             raise MatchInWrongStatus()
         if self.map.num_seats == self.players.count():
             all_ready = True
-            if self.status == self.STATUS_SETUP or (self.STATUS_PAUSED and self.latest_turn() is None):
+            if self.status == self.STATUS_SETUP:
                 for player in self.players.all():
                     if not player.setup_ready:
                         all_ready = False
-            if self.status == self.STATUS_PLAYING or (self.STATUS_PAUSED and self.latest_turn() is not None):
+            if self.is_in_progress():
                 for player in self.players.all():
-                    if not player.latest_player_in_turn().ready:
+                    if not player.latest_player_in_turn().ready and player.is_active():
                         all_ready = False
             if all_ready:
                 self.all_players_ready()
@@ -420,108 +625,11 @@ class Match(models.Model):
         self.status = self.STATUS_PLAYING
         self.save()
 
-    def process_turn(self):  # TODO: refactor
-        # Create new turn
-        outgoing_turn = self.latest_turn()
-        incoming_turn = Turn.objects.create(match=self, number=outgoing_turn.number + 1)
-        incoming_turn.save()
-
-        # Clone players
-        for player in PlayerInTurn.objects.filter(turn=outgoing_turn):
-            player.pk = None
-            player.turn = incoming_turn
-            player.ready = False
-            player.save(force_insert=True)
-
-        # Clone tokens
-        for token in BoardToken.objects.filter(owner__in=PlayerInTurn.objects.filter(turn=outgoing_turn)):
-            token.pk = None
-            token.moved_this_turn = False
-            token.can_move_this_turn = True
-            token.retreat_from_draw = False
-            token.owner = PlayerInTurn.objects.get(match_player=token.owner.match_player, turn=incoming_turn)
-            token.save(force_insert=True)
-
-        # Process commands
-        for outgoing_player_in_turn in PlayerInTurn.objects.filter(turn=outgoing_turn):
-            incoming_player_in_turn = PlayerInTurn.objects.get(turn=incoming_turn,
-                                                               match_player=outgoing_player_in_turn.match_player)
-            for command in outgoing_player_in_turn.commands.all().order_by('order'):
-
-                if command.type == Command.TYPE_MOVEMENT:
-                    token = BoardToken.objects.filter(owner__turn=incoming_turn,
-                                                      type=command.token_type,
-                                                      position=command.location).first()
-                    if token is None or not token.can_move_this_turn:
-                        command.valid = False
-                    elif self.check_map_path(token, command.location, command.move_destination):
-                        token.position = command.move_destination
-                        token.moved_this_turn = True
-                        if command.location == incoming_player_in_turn.match_player.country.reserve and \
-                                        command.move_destination == incoming_player_in_turn.match_player.country.headquarters:
-                            token.can_move_this_turn = True
-                        else:
-                            token.can_move_this_turn = False
-                        token.save()
-                        command.valid = True
-                    else:
-                        command.valid = False
-
-                elif command.type == Command.TYPE_PURCHASE:
-                    if not command.token_type.purchasable:
-                        command.valid = False
-                    elif command.token_type.strength > incoming_player_in_turn.power_points:
-                        command.valid = False
-                    else:
-                        incoming_player_in_turn.power_points -= command.token_type.strength
-                        incoming_player_in_turn.save()
-                        BoardToken.objects.create(
-                            type=command.token_type,
-                            position=incoming_player_in_turn.match_player.country.reserve,
-                            owner=incoming_player_in_turn
-                        )
-                        command.valid = True
-
-                elif command.type == Command.TYPE_CONVERSION:
-                    consumable = BoardToken.objects.filter(
-                        owner=incoming_player_in_turn,
-                        type=command.conversion.needs,
-                        position=command.location
-                    ).order_by('can_move_this_turn')
-
-                    if consumable.count() < command.conversion.needs_quantity:
-                        command.valid = False
-                    else:
-                        for t in consumable[:command.conversion.needs_quantity]:
-                            t.delete()
-                        for i in range(command.conversion.produces_quantity):
-                            BoardToken.objects.create(
-                                type=command.conversion.produces,
-                                position=command.location,
-                                owner=incoming_player_in_turn,
-                                can_move_this_turn=
-                                command.location == incoming_player_in_turn.match_player.country.reserve
-                            )
-                        command.valid = True
-
-                else:
-                    raise AssertionError("Invalid command type")
-
-                command.save()
-
-            # if no valid movements, substract power point
-            valid_command = False
-            for command in outgoing_player_in_turn.commands.all():
-                if command.valid:
-                    valid_command = True
-            if not valid_command and incoming_player_in_turn.power_points > 0:
-                incoming_player_in_turn.power_points -= 1
-                incoming_player_in_turn.save()
-
-        # Process battles
-        while True:  # TODO: add maximum iterations?
+    def process_battles(self, outgoing_turn, incoming_turn):
+        iterations = 0
+        while True:
             token_retreated = False
-            for region in self.map.regions.all():  # TODO: optimizable with group by
+            for region in self.map.regions.all():
                 tokens_in_region = BoardToken.objects.filter(owner__turn=incoming_turn, position=region)
                 if tokens_in_region.count() > 1:
                     # Sort tokens per owner
@@ -576,6 +684,63 @@ class Match(models.Model):
                                         token_retreated = True
             if not token_retreated:
                 break
+            iterations += 1
+            if iterations >= settings.MAX_BATTLE_ITERATIONS:
+                assert False
+
+    def check_and_process_end_of_game(self):
+        remaining_players = [match_player
+                             for match_player
+                             in self.players.all()
+                             if match_player.is_active()]
+        if len(remaining_players) == 1:
+            self.status = self.STATUS_FINISHED
+        elif len(remaining_players) == 0:
+            self.status = self.STATUS_FINISHED
+        self.save()
+
+    def process_turn(self):
+        # Create new turn
+        outgoing_turn = self.latest_turn()
+        incoming_turn = Turn.objects.create(match=self, number=outgoing_turn.number + 1)
+        incoming_turn.save()
+
+        # Clone players
+        for player in PlayerInTurn.objects.filter(turn=outgoing_turn):
+            player.pk = None
+            player.turn = incoming_turn
+            player.ready = False
+            player.save(force_insert=True)
+
+        # Clone tokens
+        for token in BoardToken.objects.filter(owner__in=PlayerInTurn.objects.filter(turn=outgoing_turn)):
+            token.pk = None
+            token.moved_this_turn = False
+            token.can_move_this_turn = True
+            token.retreat_from_draw = False
+            token.owner = PlayerInTurn.objects.get(match_player=token.owner.match_player, turn=incoming_turn)
+            token.save(force_insert=True)
+
+        # Process commands
+        for outgoing_player_in_turn in PlayerInTurn.objects.filter(turn=outgoing_turn):
+            incoming_player_in_turn = PlayerInTurn.objects.get(turn=incoming_turn,
+                                                               match_player=outgoing_player_in_turn.match_player)
+
+            valid_command = False
+            for command in outgoing_player_in_turn.commands.all().order_by('order'):
+                command.valid = command.is_valid(incoming_turn, incoming_player_in_turn)
+                if command.valid:
+                    valid_command = True
+                    command.execute(incoming_turn, incoming_player_in_turn)
+                command.save()
+
+            # if no valid movements, substract power point
+            if not valid_command and incoming_player_in_turn.power_points > 0:
+                incoming_player_in_turn.power_points -= 1
+                incoming_player_in_turn.save()
+
+        # Process battles
+        self.process_battles(outgoing_turn, incoming_turn)
 
         # Delete shot missiles and steal power points from shot infinite strength missiles
         for missile in BoardToken.objects.filter(owner__turn=incoming_turn,
@@ -590,80 +755,16 @@ class Match(models.Model):
                 steal_from.save()
             missile.delete()
 
-        # Flag capture (including tokens and power points)
+        # Flag capture & defeats
         for match_player in (match_player for match_player in self.players.all() if not match_player.defeated):
-            player_in_turn = match_player.latest_player_in_turn()
-            defeater_token = BoardToken.objects.filter(owner__turn=incoming_turn,
-                                                       type__can_capture_flag=True,
-                                                       position=match_player.country.headquarters) \
-                .exclude(owner=player_in_turn).first()
-            if defeater_token is not None:
-                defeater = defeater_token.owner
-                defeater.power_points += player_in_turn.power_points
-                defeater.save()
-                player_in_turn.power_points = 0
-                player_in_turn.defeated = True
-                player_in_turn.save()
-                match_player.defeated = True
-                match_player.save()
-                captured_tokens = BoardToken.objects.filter(owner=player_in_turn)
-                for token in captured_tokens:
-                    token.owner = defeater
-                    token.position = defeater.match_player.country.reserve
-                    token.save()
-
-        # TODO Players without power points or tokens are defeated
+            match_player.latest_player_in_turn().check_and_process_defeat()
 
         # Check end of game
-        remaining_players = [match_player
-                             for match_player
-                             in self.players.all()
-                             if not match_player.defeated and not match_player.left_match]
-
-        if len(remaining_players) == 1:
-            self.status = self.STATUS_FINISHED
-        elif len(remaining_players) == 0:
-            self.status = self.STATUS_FINISHED
-        self.save()
+        self.check_and_process_end_of_game()
 
         # Collect power points
         for player_in_turn in PlayerInTurn.objects.filter(turn=incoming_turn):
-            countries = list()
-            for token in BoardToken.objects.filter(owner=player_in_turn).exclude(
-                    position__country=player_in_turn.match_player.country):
-                if token.position.country is not None and token.position.country not in countries:
-                    countries.append(token.position.country)
-            player_in_turn.power_points += len(countries)
-            player_in_turn.save()
-
-    @staticmethod
-    def check_map_path(token, source, destination):
-        def check_path(token, source, destination, movements_left, crossed_water):
-            if source == destination:
-                return True
-            if movements_left == 0:
-                return False
-            for link in source.usable_links():
-                if link.crossing_water and (
-                                not token.type.can_be_on_water and crossed_water and token.type.one_water_cross_per_movement):
-                    pass
-                else:
-                    links_to = link.destination if link.source == source else link.source
-                    if ((links_to.water and token.type.can_be_on_water) or (
-                                links_to.land and token.type.can_be_on_land) ) and \
-                            check_path(token, links_to, destination, movements_left - 1,
-                                       crossed_water or link.crossing_water):
-                        return True
-            return False
-
-        if destination.countries_with_this_reserve.exists() and not token.type.special_attack_reserves:
-            return False
-        if source == destination and not token.special_missile:
-            return False
-        if source.countries_with_this_reserve.exists():
-            return destination.countries_with_this_headquarter.exists() and \
-                   destination.countries_with_this_headquarter.first() == source.countries_with_this_reserve.first()
-        return check_path(token, source, destination, token.type.movements, False)
+            player_in_turn.collect_power_points()
 
     def get_absolute_url(self):
         return reverse('game.views.view_match', kwargs={'match_pk': self.pk})
@@ -692,11 +793,14 @@ class MatchPlayer(models.Model):
     setup_ready = models.BooleanField(default=False)
     country = models.ForeignKey(MapCountry, related_name='players', blank=True, null=True)
     timeout_requested = models.BooleanField(default=False)  # TODO: use this
-    left_match = models.BooleanField(default=False)  # TODO: use this
-    defeated = models.BooleanField(default=False)  # TODO: use this
+    left_match = models.BooleanField(default=False)
+    defeated = models.BooleanField(default=False)
 
     def latest_player_in_turn(self):
         return PlayerInTurn.objects.filter(match_player=self).order_by('-turn_id').first()
+
+    def is_active(self):
+        return not self.defeated and not self.left_match
 
     def kick(self):
         if self.match.status != Match.STATUS_SETUP:
@@ -706,13 +810,16 @@ class MatchPlayer(models.Model):
         self.delete()
 
     def leave(self):
-        if self.match.status != Match.STATUS_SETUP:
-            raise MatchInWrongStatus()
-        if self.match.owner.pk == self.pk:
-            self.match.status = Match.STATUS_SETUP_ABORTED
-            self.match.save()
+        if self.match.is_in_progress():
+            self.latest_player_in_turn().leave()
+        elif self.match.status == Match.STATUS_SETUP:
+            if self.match.owner.pk == self.pk:
+                self.match.status = Match.STATUS_SETUP_ABORTED
+                self.match.save()
+            else:
+                self.delete()
         else:
-            self.delete()
+            raise MatchInWrongStatus()
 
     def make_ready(self):
         if self.match.status == Match.STATUS_SETUP:
@@ -721,11 +828,20 @@ class MatchPlayer(models.Model):
             self.setup_ready = True
             self.save()
             self.match.check_all_players_ready()
-        elif self.match.status in (Match.STATUS_PLAYING, Match.STATUS_PAUSED):
+        elif self.match.is_in_progress():
             self.latest_player_in_turn().make_ready()
         else:
             raise MatchInWrongStatus()
 
+    def status_box(self):
+        if self.match.status in (Match.STATUS_ABORTED, Match.STATUS_SETUP_ABORTED, Match.STATUS_FINISHED) \
+                or not self.is_active():
+            return "☒"
+        elif self.match.status == Match.STATUS_SETUP:
+            return "☑" if self.setup_ready else "☐"
+        elif self.match.is_in_progress():
+            return self.latest_player_in_turn().status_box()
+        assert False
 
     def __str__(self):
         return '%s in %s' % (self.player.user.username, self.match.name)

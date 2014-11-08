@@ -6,15 +6,6 @@ from account.tests import create_test_users, create_inactive_players
 from game.models import Match, MatchPlayer, Turn, PlayerInTurn, BoardToken, Command, BoardTokenType, MapRegion
 
 
-
-
-
-
-
-
-# TODO: test map view
-
-
 class UnauthenticatedAccess(TestCase):
     def test_game_start_no_login(self):
         response = self.client.get(reverse('game.views.start'), follow=True)
@@ -81,7 +72,7 @@ class MatchPlay(TestCase):
 
         # Log in alice
         response = self.client.post(reverse('account.views.login'),
-                                    data={'username': 'alicemail@localhost', 'password': 'apwd'}, follow=True)
+                                    data={'username': 'Alice', 'password': 'apwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
 
@@ -550,7 +541,7 @@ class MatchPlay(TestCase):
                                               purchasable=False).first().pk},
                                     follow=True)
         self.assertRedirects(response, match.get_absolute_url())
-        self.assertContains(response, "This token type cannot be purchased")
+        self.assertContains(response, "Invalid token type")
         self.assertEqual(Command.objects.all().count(), 0)
 
         # Invalid conversion, missing parameters
@@ -577,6 +568,47 @@ class MatchPlay(TestCase):
         self.assertContains(response, "Invalid conversion")
         self.assertEqual(Command.objects.all().count(), 0)
 
+        # Logout and login as player 2
+        response = self.client.post(reverse('account.views.logout'), follow=True)
+        self.assertRedirects(response, reverse('account.views.login'))
+        self.assertNotIn('_auth_user_id', self.client.session)
+
+        response = self.client.post(reverse('account.views.login'),
+                                    data={'username': players[2], 'password': 'cpwd'}, follow=True)
+        self.assertRedirects(response, reverse('game.views.start'))
+        self.assertIn('_auth_user_id', self.client.session)
+
+        # Try to add command (but is not a player)
+        response = self.client.post(reverse('game.views.add_command', kwargs={'match_pk': match.pk}),
+                                    data={
+                                        'command_type': 'move',
+                                        'move_token_type': BoardTokenType.objects.get(name="Small Tank").id,
+                                        'move_region_from': MapRegion.objects.get(name="South Reserve").id,
+                                        'move_region_to': MapRegion.objects.get(name="South HQ").id},
+                                    follow=True)
+        self.assertRedirects(response, reverse('game.views.start'))
+        self.assertEqual(Command.objects.all().count(), 0)
+        self.assertContains(response, "You are not playing in this match")
+        self.assertContains(response, "You can not see this match")
+
+        # Try to view match (but it's private)
+        response = self.client.get(reverse('game.views.view_match', kwargs={'match_pk': match.pk}), follow=True)
+        self.assertRedirects(response, reverse('game.views.start'))
+        self.assertContains(response, "You can not see this match")
+
+        response = self.client.get(reverse('game.views.view_map_in_match', kwargs={'match_pk': match.pk}), follow=True)
+        self.assertRedirects(response, reverse('game.views.start'))
+        self.assertContains(response, "You can not see this match")
+
+        # Logout and login as player 1
+        response = self.client.post(reverse('account.views.logout'), follow=True)
+        self.assertRedirects(response, reverse('account.views.login'))
+        self.assertNotIn('_auth_user_id', self.client.session)
+
+        response = self.client.post(reverse('account.views.login'),
+                                    data={'username': players[1], 'password': 'bpwd'}, follow=True)
+        self.assertRedirects(response, reverse('game.views.start'))
+        self.assertIn('_auth_user_id', self.client.session)
 
         # Player 1 movements in turn 1:
         # Small tank from reserve to headquarters
@@ -2139,8 +2171,17 @@ class MatchPlay(TestCase):
         match = Match.objects.get(id=match.id)
         self.assertEqual(match.status, Match.STATUS_FINISHED)
 
+        # Try to add command after game end
+        self.client.post(reverse('game.views.add_command', kwargs={'match_pk': match.pk}),
+                         data={
+                             'command_type': 'move',
+                             'move_token_type': BoardTokenType.objects.get(name="Infantry").id,
+                             'move_region_from': MapRegion.objects.get(name="North 5").id,
+                             'move_region_to': MapRegion.objects.get(name="North HQ").id},
+                         follow=True)
+        self.assertEqual(Command.objects.all().count(), 70)
+
         # TODO: when another map available, try movements to other map's locations
-        # TODO: try adding commands when not playing
 
     def test_kicks(self):
         players = create_test_users()
@@ -2230,6 +2271,102 @@ class MatchPlay(TestCase):
         self.assertEqual(match.players.count(), 1)
         self.assertEqual(match.status, Match.STATUS_SETUP)
         self.assertRedirects(response, match.get_absolute_url())
+
+    def test_leave_on_first_turn_two_players(self):
+        players = create_test_users()
+        inactive_players = create_inactive_players()
+
+        # Login
+        response = self.client.post(reverse('account.views.login'),
+                                    data={'username': players[0].user.username, 'password': 'apwd'}, follow=True)
+        self.assertRedirects(response, reverse('game.views.start'))
+        self.assertIn('_auth_user_id', self.client.session)
+
+        # Create match
+        response = self.client.get(reverse('game.views.new_match'))
+        self.assertEqual(response.status_code, 200)
+
+        response = self.client.post(reverse('game.views.new_match'), data={'name': 'testmatch', 'map': '1'},
+                                    follow=True)
+        match = Match.objects.get(pk=1)
+        self.assertTrue(match)
+        self.assertEqual(match.owner, players[0])
+        self.assertEqual(match.players.count(), 1)
+        self.assertEqual(match.players.get().player, players[0])
+        self.assertRedirects(response, match.get_absolute_url())
+        self.assertContains(response, players[0].user.username)
+
+        response = self.client.get(reverse('game.views.start'))
+        self.assertContains(response, 'testmatch')
+
+        # Invite player 1
+        response = self.client.get(
+            reverse('game.views.match_invite', kwargs={'match_pk': match.pk, 'player_pk': players[1].pk}), follow=True)
+        self.assertRedirects(response, match.get_absolute_url())
+        self.assertEqual(match.players.count(), 2)
+        self.assertContains(response, players[0].user.username)
+        self.assertContains(response, players[1].user.username)
+        self.assertNotContains(response, players[2].user.username)
+        self.assertNotContains(response, players[3].user.username)
+        self.assertNotContains(response, players[4].user.username)
+        self.assertNotContains(response, inactive_players[0].user.username)
+        self.assertNotContains(response, inactive_players[1].user.username)
+
+        # Make ready
+        response = self.client.get(reverse('game.views.ready', kwargs={'match_pk': match.pk}), follow=True)
+        self.assertRedirects(response, match.get_absolute_url())
+        self.assertTrue(MatchPlayer.objects.get_by_match_and_player(match, players[0]).setup_ready)
+        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[1]).setup_ready)
+        self.assertEqual(match.status, Match.STATUS_SETUP)
+
+        # Logout and login as player 1
+        response = self.client.post(reverse('account.views.logout'), follow=True)
+        self.assertRedirects(response, reverse('account.views.login'))
+        self.assertNotIn('_auth_user_id', self.client.session)
+
+        response = self.client.post(reverse('account.views.login'),
+                                    data={'username': players[1], 'password': 'bpwd'}, follow=True)
+        self.assertRedirects(response, reverse('game.views.start'))
+        self.assertIn('_auth_user_id', self.client.session)
+
+        # Make ready, starting the game
+        response = self.client.get(reverse('game.views.ready', kwargs={'match_pk': match.pk}), follow=True)
+        self.assertRedirects(response, match.get_absolute_url())
+        self.assertTrue(MatchPlayer.objects.get_by_match_and_player(match, players[0]).setup_ready)
+        self.assertTrue(MatchPlayer.objects.get_by_match_and_player(match, players[1]).setup_ready)
+        match = Match.objects.get(pk=match.pk)
+        self.assertEqual(match.status, Match.STATUS_PLAYING)
+        countries = list(match.map.countries.all())
+        self.assertEqual(MatchPlayer.objects.get_by_match_and_player(match, players[0]).country, countries[0])
+        self.assertEqual(MatchPlayer.objects.get_by_match_and_player(match, players[1]).country, countries[1])
+        turn = Turn.objects.get(match=match, number=1)
+        self.assertEqual(len(PlayerInTurn.objects.filter(match_player__match=match)), 2)
+        self.assertEqual(len(BoardToken.objects.filter(
+            owner__match_player=MatchPlayer.objects.get_by_match_and_player(match, players[0]))), 8)
+        self.assertEqual(len(BoardToken.objects.filter(
+            owner__match_player=MatchPlayer.objects.get_by_match_and_player(match, players[1]))), 8)
+        self.assertEqual(PlayerInTurn.objects.get(
+            match_player=MatchPlayer.objects.get_by_match_and_player(match, players[0])).total_strength, 40)
+        self.assertEqual(PlayerInTurn.objects.get(
+            match_player=MatchPlayer.objects.get_by_match_and_player(match, players[1])).total_strength, 40)
+
+        # Leave game
+        response = self.client.get(reverse('game.views.leave', kwargs={'match_pk': match.pk}), follow=True)
+        self.assertRedirects(response, match.get_absolute_url())
+        match = Match.objects.get(pk=1)
+        self.assertEqual(match.players.count(), 2)
+        self.assertEqual(match.status, Match.STATUS_FINISHED)
+        match_player = dict()
+        match_player[0] = MatchPlayer.objects.get_by_match_and_player(match, players[0])
+        match_player[1] = MatchPlayer.objects.get_by_match_and_player(match, players[1])
+        self.assertFalse(match_player[0].left_match)
+        self.assertFalse(match_player[0].latest_player_in_turn().left_match)
+        self.assertTrue(match_player[0].is_active())
+        self.assertTrue(match_player[1].left_match)
+        self.assertTrue(match_player[1].latest_player_in_turn().left_match)
+        self.assertFalse(match_player[1].is_active())
+        self.assertTrue(BoardToken.objects.filter(owner=match_player[0].latest_player_in_turn()).exists())
+        self.assertFalse(BoardToken.objects.filter(owner=match_player[1].latest_player_in_turn()).exists())
 
 
         # TODO    def test_join_public_private(self):

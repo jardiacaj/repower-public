@@ -68,6 +68,8 @@ USE_TZ = True
 
 # Static files (CSS, JavaScript, Images)
 
+# TODO: static root
+
 STATIC_URL = '/static/'
 
 TEMPLATE_DIRS = (
@@ -91,3 +93,5 @@ INVITE_CODE_LENGTH = 7
 INVITE_MAIL_SENDER_ADDRESS = 'anonymous@localhost'
 
 COMMANDS_PER_TURN = 5
+
+MAX_BATTLE_ITERATIONS = 30
