@@ -15,6 +15,10 @@ class UnauthenticatedAccess(TestCase):
         response = self.client.get(reverse('game.views.new_match'), follow=True)
         self.assertContains(response, "Welcome to Repower")
 
+    def test_public_matches_no_login(self):
+        response = self.client.get(reverse('game.views.public_matches'), follow=True)
+        self.assertContains(response, "Welcome to Repower")
+
     def test_view_match_no_login(self):
         response = self.client.get(reverse('game.views.view_match', kwargs={'match_pk': 1}), follow=True)
         self.assertContains(response, "Welcome to Repower")
@@ -46,6 +50,15 @@ class UnauthenticatedAccess(TestCase):
 
     def test_kick_no_login(self):
         response = self.client.get(reverse('game.views.kick', kwargs={'match_pk': 1, 'player_pk': 1}), follow=True)
+        self.assertContains(response, "Welcome to Repower")
+
+    def test_add_command_no_login(self):
+        response = self.client.get(reverse('game.views.add_command', kwargs={'match_pk': 1}), follow=True)
+        self.assertContains(response, "Welcome to Repower")
+
+    def test_delete_command_no_login(self):
+        response = self.client.get(reverse('game.views.delete_command', kwargs={'match_pk': 1, 'order': 0}),
+                                   follow=True)
         self.assertContains(response, "Welcome to Repower")
 
     def test_view_map_in_match_no_login(self):
@@ -2420,5 +2433,103 @@ class MatchPlay(TestCase):
         self.assertFalse(BoardToken.objects.filter(owner=match_player[1].latest_player_in_turn()).exists())
 
 
-        # TODO    def test_join_public_private(self):
+class MatchListing(TestCase):
+    def test_create_and_list_game(self):
+        players = create_test_users()
+
+        # Login
+        response = self.client.post(reverse('account.views.login'),
+                                    data={'username': players[0].user.username, 'password': 'apwd'}, follow=True)
+        self.assertRedirects(response, reverse('game.views.start'))
+        self.assertIn('_auth_user_id', self.client.session)
+
+        # Create private match
+        response = self.client.get(reverse('game.views.new_match'))
+        self.assertEqual(response.status_code, 200)
+
+        response = self.client.post(reverse('game.views.new_match'), data={'name': 'privmatch', 'map': '1'},
+                                    follow=True)
+        match_private = Match.objects.get(pk=1)
+        self.assertTrue(match_private)
+        self.assertEqual(match_private.owner, players[0])
+        self.assertEqual(match_private.players.count(), 1)
+        self.assertEqual(match_private.players.get().player, players[0])
+        self.assertRedirects(response, match_private.get_absolute_url())
+        self.assertContains(response, players[0].user.username)
+
+        response = self.client.get(reverse('game.views.start'))
+        self.assertContains(response, match_private.name)
+
+        # Create public match
+        response = self.client.get(reverse('game.views.new_match'))
+        self.assertEqual(response.status_code, 200)
+
+        response = self.client.post(reverse('game.views.new_match'), data={'name': 'pubmatch', 'map': '1'},
+                                    follow=True)
+        match_public = Match.objects.get(pk=2)
+        self.assertTrue(match_public)
+        self.assertEqual(match_public.owner, players[0])
+        self.assertEqual(match_public.players.count(), 1)
+        self.assertEqual(match_public.players.get().player, players[0])
+        self.assertRedirects(response, match_public.get_absolute_url())
+        self.assertContains(response, players[0].user.username)
+
+        response = self.client.get(reverse('game.views.start'))
+        self.assertContains(response, match_public.name)
+
+        # Make match public
+        response = self.client.get(reverse('game.views.make_public', kwargs={'match_pk': match_public.pk}), follow=True)
+        self.assertRedirects(response, match_public.get_absolute_url())
+        self.assertTrue(Match.objects.get(pk=match_public.pk).public)
+
+        # Test match listing
+        response = self.client.get(reverse('game.views.public_matches'), follow=True)
+        self.assertNotContains(response, match_private.name)
+        self.assertContains(response, match_public.name)
+
+        response = self.client.get(reverse('game.views.public_matches'), {'filter': 'joinable'}, follow=True)
+        self.assertNotContains(response, match_private.name)
+        self.assertContains(response, match_public.name)
+
+        response = self.client.get(reverse('game.views.public_matches'), {'filter': 'all'}, follow=True)
+        self.assertNotContains(response, match_private.name)
+        self.assertContains(response, match_public.name)
+
+        # Logout and login as player 1
+        response = self.client.post(reverse('account.views.logout'), follow=True)
+        self.assertRedirects(response, reverse('account.views.login'))
+        self.assertNotIn('_auth_user_id', self.client.session)
+
+        response = self.client.post(reverse('account.views.login'),
+                                    data={'username': players[1], 'password': 'bpwd'}, follow=True)
+        self.assertRedirects(response, reverse('game.views.start'))
+        self.assertIn('_auth_user_id', self.client.session)
+
+        # Test seeing private match
+        response = self.client.get(match_private.get_absolute_url(), follow=True)
+        self.assertRedirects(response, reverse('game.views.start'))
+        self.assertContains(response, "You can not see this match")
+
+        # Test seeing public match
+        response = self.client.get(match_public.get_absolute_url())
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "You can not see this match")
+
+        # Test invite to private match
+        response = self.client.get(reverse('game.views.match_invite',
+                                           kwargs={'match_pk': match_private.id, 'player_pk': players[1].pk}),
+                                   follow=True)
+        self.assertRedirects(response, reverse('game.views.start'))
+        self.assertContains(response, "Only the owner can invite in private games")
+        self.assertContains(response, "You can not see this match")
+
+        # Test invite to public match
+        response = self.client.get(reverse('game.views.match_invite',
+                                           kwargs={'match_pk': match_public.id, 'player_pk': players[1].pk}),
+                                   follow=True)
+        self.assertRedirects(response, match_public.get_absolute_url())
+        self.assertEqual(MatchPlayer.objects.count(), 3)
+        self.assertNotContains(response, "Only the owner can invite in private games")
+        self.assertNotContains(response, "You can not see this match")
+
         # TODO test creating match with private map

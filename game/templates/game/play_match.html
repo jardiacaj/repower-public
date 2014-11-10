@@ -48,6 +48,11 @@
         {% else %}
             private match
         {% endif %}
+        {% if client_is_in_game %}{% if match.is_in_progress %}
+            <br>
+            [<a href="{% url 'game.views.leave' match.pk %}"
+                onclick="return confirm('Are you sure you want to leave this match?')">leave match</a>]
+        {% endif %}{% endif %}
     </p>
 
     <p>Players:

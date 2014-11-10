@@ -19,8 +19,11 @@
 
     <p>
         <a href="{% url 'game.views.new_match' %}">Set up new match</a><br>
-        <a href="">Join a public match</a><br>
-        <a href="">Watch an ongoing match</a><br>
+        <a href="{% url 'game.views.public_matches' %}?filter=joinable">Join a public match</a><br>
+    </p>
+    <p>
+        <a href="{% url 'game.views.public_matches' %}?filter=in_progress">Watch an ongoing match</a><br>
+        <a href="{% url 'game.views.public_matches' %}?filter=finished">See finished matches</a><br>
     </p>
 
     <form action="{% url 'account.views.invite' %}" method="post">

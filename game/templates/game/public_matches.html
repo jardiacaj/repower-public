@@ -1,0 +1,16 @@
+{% extends "Repower/base.html" %}
+
+{% block title %}{{ filter_str }}{% endblock %}
+
+{% block content %}
+    <h1>Showing {{ filter_str }}</h1>
+
+    <ul>
+        {% for match in matches %}
+            <li>
+                <a href="{{ match.get_absolute_url }}">{{ match.name }}</a>
+                ({{ match.get_status_display }})
+            </li>
+        {% endfor %}
+    </ul>
+{% endblock %}

@@ -3,6 +3,7 @@ from django.conf.urls import patterns, url
 urlpatterns = patterns('',
                        url(r'^$', 'game.views.start', name='start'),
                        url(r'new_match$', 'game.views.new_match', name='new_match'),
+                       url(r'public_matches', 'game.views.public_matches', name='public_matches'),
                        url(r'match/(?P<match_pk>\d+)$', 'game.views.view_match', name='view_match'),
                        url(r'match/(?P<match_pk>\d+)/invite$', 'game.views.match_invite', name='match_invite'),
                        url(r'match/(?P<match_pk>\d+)/invite/(?P<player_pk>\d+)$', 'game.views.match_invite',
@@ -19,7 +20,5 @@ urlpatterns = patterns('',
                        url(r'map/(?P<map_pk>\d+)$', 'game.views.view_map', name='view_map'),
                        url(r'token/(?P<token_type_pk>\d+)$', 'game.views.view_token', name='view_token'),
 )
-
-# TODO: public game listing and joining
 
 # Do not forget to add unauthenticated access tests

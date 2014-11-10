@@ -38,7 +38,12 @@
         {% endfor %}
 
         {% if match.map.num_seats > match.players.count %} {% if is_owner or match.public %}
-            <br>[<a href="{% url 'game.views.match_invite' match.pk %}">invite</a>]
+            <br>
+            {% if client_is_in_game %}
+                [<a href="{% url 'game.views.match_invite' match.pk %}">invite</a>]
+            {% else %}
+                [<a href="{% url 'game.views.match_invite' match.pk player.pk %}">join</a>]
+            {% endif %}
         {% endif %}{% endif %}
     </p>
 {% endblock %}

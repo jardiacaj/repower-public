@@ -30,6 +30,26 @@ def start(request):
 
 
 @login_required
+def public_matches(request):
+    filter = request.GET.get('filter', 'all')
+    filter_str = "all public matches"
+
+    matches = Match.objects.filter(public=True)
+
+    if filter == 'joinable':
+        matches = matches.filter(status=Match.STATUS_SETUP)
+        filter_str = "joinable matches"
+    elif filter == 'in_progress':
+        matches = matches.filter(status__in=(Match.STATUS_PLAYING, Match.STATUS_PAUSED))
+        filter_str = "matches in progress"
+    elif filter == 'finished':
+        matches = matches.filter(status__in=(Match.STATUS_FINISHED, Match.STATUS_ABORTED))
+        filter_str = "finished matches"
+
+    return render(request, 'game/public_matches.html', {'matches': matches, 'filter_str': filter_str})
+
+
+@login_required
 def new_match(request):
     if request.method == 'POST':
         form = MatchCreationForm(data=request.POST)
@@ -51,7 +71,7 @@ def match_invite(request, match_pk, player_pk=None):
 
     if player_pk is not None:
         player = get_object_or_404(Player, pk=player_pk)
-        if not match.owner.user == request.user and not (match.public and match.players.get(player=player)):
+        if not match.owner.user == request.user and not match.public:
             messages.error(request, 'Only the owner can invite in private games')
             return HttpResponseRedirect(match.get_absolute_url())
         try:
@@ -226,7 +246,7 @@ def kick(request, match_pk, player_pk):
 
 
 @login_required
-def leave(request, match_pk):  # TODO: missing link on play_match template
+def leave(request, match_pk):
     match = get_object_or_404(Match, pk=match_pk)
     player = Player.objects.get_by_user(request.user)
     match_player = MatchPlayer.objects.get_by_match_and_player(match, player)
