@@ -8,6 +8,9 @@
 </head>
 
 <body>
+
+<script src="//code.jquery.com/jquery-2.1.1.min.js"></script>
+
 <p>
     {% if user.is_authenticated %}
         <a href="{% url 'Repower.views.home' %}">{{ user.username }}</a>

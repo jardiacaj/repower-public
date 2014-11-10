@@ -5,16 +5,31 @@
 
 {% block content %}
 
-    {% comment %}
-    {% with 'game/'|add:match.map.image_file_name|add:'-play.png' as image_static %}
-        <img src="{% static image_static %}" style="float: left;">
-    {% endwith %}
-    {% endcomment %}
-    <img src="{% url 'game.views.view_map_in_match' match.pk %}?turn={{ turn.number }}" style="float: left;">
+    <script>
+        var regions = [
+            {% for region in match.map.regions.all %}
+                {% if region.render_on_map %}
+                    {
+                        id: {{ region.id }},
+                        name: "{{ region.name }}",
+                        position: [{{ region.position_x }}, {{ region.position_y }}],
+                        size: [{{ region.size_x }}, {{ region.size_y }}]
+                    } {% if not forloop.last %}, {% endif %}
+                {% endif %}
+            {% endfor %}
+        ];
+    </script>
 
-    <h1>{{ match.name }}
+    <script src="{% static 'game/play_match.js' %}"></script>
+
+    <img
+            src="{% url 'game.views.view_map_in_match' match.pk %}?turn={{ turn.number }}"
+            style="float: left;"
+            id="map_image">
+
+    <h1 style="text-align: center;">{{ match.name }}
+        <br>
         <span style="font-size: 70%;">
-            --
             {% if turn.number != 1 %}
                 <a href="{{ match.get_absolute_url }}?turn=1">|&lt</a>
                 <a href="{{ match.get_absolute_url }}?turn={{ turn.number|add:-1 }}">&lt</a>
@@ -27,7 +42,7 @@
         </span>
     </h1>
 
-    <p>Owner: {{ match.owner.user.username }},
+    <p style="text-align: center;">Owner: {{ match.owner.user.username }},
         {% if match.public %}
             public match
         {% else %}
@@ -39,118 +54,134 @@
         {% for player_in_turn in turn.players.all %}
             <br>
 
-            {{ player_in_turn.status_box }}
+            <span onclick="
+                    if (map_click_callback != null) {
+                    var region = {
+                    name: '{{ player_in_turn.match_player.country.reserve.name }}',
+                    id: {{ player_in_turn.match_player.country.reserve.id }}
+                    };
+                    map_click_callback(region);
+                    }
+                    ">
 
-            <span style="font-weight: bold; color: #{{ player_in_turn.match_player.country.color_rgb }};">
-                {{ player_in_turn.total_strength }}
+                {{ player_in_turn.status_box }}
 
-                {{ player_in_turn.match_player.player.user.username }}
-            </span>
+                <span style="font-weight: bold; color: #{{ player_in_turn.match_player.country.color_rgb }};">
+                    {{ player_in_turn.total_strength }}
 
-            <span style="clear: right; float: right;">
-                {% for token in player_in_turn.tokens_in_reserve.all %}
-                    <img src="{% url 'game.views.view_token' token.type_id %}?country={{ player_in_turn.match_player.country_id }}"
-                         title="{{ token.type.name }}">
-                {% endfor %}
-                ⌁{{ player_in_turn.power_points }}
+                    {{ player_in_turn.match_player.player.user.username }}
+                </span>
+
+                <span style="clear: right; float: right;">
+                    {% for token in player_in_turn.tokens_in_reserve.all %}
+                        <img src="{% url 'game.views.view_token' token.type_id %}?country={{ player_in_turn.match_player.country_id }}"
+                             title="{{ token.type.name }}">
+                    {% endfor %}
+                    ⌁{{ player_in_turn.power_points }}
+                </span>
             </span>
         {% endfor %}
     </p>
 
     {% if client_is_in_game %}
-        <h2>Commands</h2>
+        <div id="commands">
+            <h2>Your commands</h2>
 
-        <p>
-            {% for command in player_in_turn.commands.all %}
-                {{ command.in_game_str }}<br>
-            {% endfor %}
-        </p>
-
-        <form action="{% url 'game.views.add_command' match.id %}"
-              method="post"
-              {% if not can_add_commands %}style="display: none;"{% endif %}>
-            {% csrf_token %}
             <p>
-                New command: <br>
-                <script>
-                    function movement_type_change() {
-                        document.getElementById('move_command').style.display = "none";
-                        document.getElementById('buy_command').style.display = "none";
-                        document.getElementById('convert_command').style.display = "none";
+                {% for command in player_in_turn.commands.all %}
+                    {{ command.in_game_str }}<br>
+                {% empty %}
+                    You didn't add any commands for this turn yet
+                {% endfor %}
+            </p>
 
-                        var e = document.getElementById("command_type");
-                        document.getElementById(e.options[e.selectedIndex].value + '_command').style.display = '';
-                    }
-                </script>
+            <div id="command_adder" {% if not can_add_commands %} style="display: none;" {% endif %}>
+                <h2>New command</h2>
 
-                <select id="command_type" name="command_type" onchange="movement_type_change()">
-                    <option value="move" selected="selected">Move</option>
-                    <option value="buy">Purchase</option>
-                    <option value="convert">Convert</option>
-                </select>
+                <p id="command_type_chooser" class="chooser">
+                    <button type="button" onclick="add_movement_click()">Add Movement</button>
+                    <button type="button" onclick="add_purchase_click()">Add Purchase</button>
+                    <button type="button" onclick="add_conversion_click()">Add Conversion</button>
+                </p>
 
-                <span id="move_command">
-                    <select name="move_token_type">
-                        <option value="0">--- Token ---</option>
+                <div id="buy_token_type_chooser" class="chooser" style="display: none;">
+                    <h2>Choose token to purchase</h2>
 
-                        {% for token_type in token_types %}
-                            <option value="{{ token_type.id }}">{{ token_type.name }}</option>
-                        {% endfor %}
-                    </select>
-
-                    <select name="move_region_from">
-                        <option value="0">--- From ---</option>
-
-                        {% for region in match.map.regions.all %}
-                            <option value="{{ region.id }}">{{ region.name }}</option>
-                        {% endfor %}
-                    </select>
-
-                    <select name="move_region_to">
-                        <option value="0">--- To ---</option>
-
-                        {% for region in match.map.regions.all %}
-                            <option value="{{ region.id }}">{{ region.name }}</option>
-                        {% endfor %}
-                    </select>
-                </span>
-
-                <span id="buy_command" style="display: none;">
-                    <select name="buy_token_type">
-                        <option value="0">--- Token ---</option>
-
+                    <p>
                         {% for token_type in token_types %}
                             {% if token_type.purchasable %}
-                                <option value="{{ token_type.id }}">{{ token_type.name }} (⌁{{ token_type.strength }})
-                                </option>
+                                <button type="button" onclick="add_purchase_command('{{ token_type.id }}');">
+                                    <img src="{% url 'game.views.view_token' token_type.id %}?country={{ player_in_turn.match_player.country_id }}">
+                                    {{ token_type.name }} for ⌁{{ token_type.strength }}
+                                </button>
                             {% endif %}
                         {% endfor %}
-                    </select>
-                </span>
+                    </p>
+                </div>
 
-                <span id="convert_command" style="display: none;">
-                    <select name="convert_id">
-                        <option value="0">--- Conversions ---</option>
+                <div id="move_token_type_chooser_step1" class="chooser" style="display: none;">
+                    <h2>Choose token type to move</h2>
 
+                    <p>
+                        {% for token_type in token_types %}
+                            <button type="button" onclick="add_movement_command_step1('{{ token_type.id }}');">
+                                <img src="{% url 'game.views.view_token' token_type.id %}?country={{ player_in_turn.match_player.country_id }}">
+                                {{ token_type.name }}
+                            </button>
+                        {% endfor %}
+                    </p>
+                </div>
+
+                <div id="move_token_type_chooser_step2" class="chooser" style="display: none;">
+                    <h2>Choose region to move token FROM (click on map or reserve)</h2>
+                </div>
+
+                <div id="move_token_type_chooser_step3" class="chooser" style="display: none;">
+                    <h2>Choose region to move token TO (click on map or reserve)</h2>
+                </div>
+
+                <div id="convert_conversion_chooser_step1" class="chooser" style="display: none;">
+                    <h2>Choose conversion to make</h2>
+
+                    <p>
                         {% for conversion in conversions %}
-                            <option value="{{ conversion.id }}">
-                                {{ conversion }}
-                            </option>
+                            <button type="button" onclick="add_conversion_command_step1('{{ conversion.id }}');">
+                                {{ conversion.needs_quantity }}
+                                <img src="{% url 'game.views.view_token' conversion.needs.id %}?country={{ player_in_turn.match_player.country_id }}">
+                                to
+                                {{ conversion.produces_quantity }}
+                                <img src="{% url 'game.views.view_token' conversion.produces.id %}?country={{ player_in_turn.match_player.country_id }}">
+                            </button>
                         {% endfor %}
-                    </select>
+                    </p>
+                </div>
 
-                    <select name="convert_region">
-                        <option value="0">--- Location ---</option>
+                <div id="convert_conversion_chooser_step2" class="chooser" style="display: none;">
+                    <h2>Choose region to make conversion in (click on map or reserve)</h2>
+                </div>
 
-                        {% for region in match.map.regions.all %}
-                            <option value="{{ region.id }}">{{ region.name }}</option>
-                        {% endfor %}
-                    </select>
-                </span>
+                <div id="command_cancel" class="chooser" style="display: none;">
+                    <p>
+                        <button type="button" onclick="command_cancel();">Cancel</button>
+                    </p>
+                </div>
 
-                <input type="submit" value="ADD COMMAND">
-            </p>
-        </form>
+                <form action="{% url 'game.views.add_command' match.id %}"
+                      method="post"
+                      id="command_form"
+                      style="display: none;">
+                    {% csrf_token %}
+
+                    <input type="hidden" id="command_type" name="command_type">
+                    <input type="hidden" id="buy_token_type" name="buy_token_type">
+                    <input type="hidden" id="move_token_type" name="move_token_type">
+                    <input type="hidden" id="move_region_from" name="move_region_from">
+                    <input type="hidden" id="move_region_to" name="move_region_to">
+                    <input type="hidden" id="convert_id" name="convert_id">
+                    <input type="hidden" id="convert_region" name="convert_region">
+                </form>
+            </div>
+        </div>
 
         {% if not player_in_turn.ready %}
             [<a href="{% url 'game.views.ready' match.pk %}">make ready</a>]
