@@ -319,3 +319,28 @@ def add_command(request, match_pk):
             messages.error(request, "Invalid command type")
 
     return HttpResponseRedirect(match.get_absolute_url())
+
+
+@login_required
+def delete_command(request, match_pk, order):
+    match = get_object_or_404(Match, pk=match_pk)
+    player = Player.objects.get_by_user(request.user)
+    match_player = MatchPlayer.objects.get_by_match_and_player(match, player)
+
+    if match_player is None:
+        messages.error(request, "You are not playing in this match")
+    elif not match_player.latest_player_in_turn().can_add_commands():
+        messages.error(request, "You can not delete commands this turn")
+    else:
+        try:
+            command = Command.objects.get(player_in_turn=match_player.latest_player_in_turn, order=order)
+            command.delete()
+            next_commands = Command.objects.filter(player_in_turn=match_player.latest_player_in_turn, order__gt=order)
+            for command in next_commands:
+                command.order -= 1
+                command.save()
+            messages.success(request, "Command deleted")
+        except Command.DoesNotExist:
+            messages.error(request, "Invalid command")
+
+    return HttpResponseRedirect(match.get_absolute_url())

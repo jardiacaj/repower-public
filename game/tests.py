@@ -591,7 +591,13 @@ class MatchPlay(TestCase):
         self.assertContains(response, "You are not playing in this match")
         self.assertContains(response, "You can not see this match")
 
-        # Try to view match (but it's private)
+        # Try to delete command (but is not a player)
+        response = self.client.get(reverse('game.views.delete_command', kwargs={'match_pk': match.pk, 'order': 0}),
+                                   follow=True)
+        self.assertContains(response, "You are not playing in this match")
+        self.assertEqual(Command.objects.all().count(), 0)
+
+        # Try to view match (but it's private and not a player)
         response = self.client.get(reverse('game.views.view_match', kwargs={'match_pk': match.pk}), follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertContains(response, "You can not see this match")
@@ -609,6 +615,45 @@ class MatchPlay(TestCase):
                                     data={'username': players[1], 'password': 'bpwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
+
+        # Add, then delete commands
+        self.client.post(reverse('game.views.add_command', kwargs={'match_pk': match.pk}),
+                         data={'command_type': 'buy',
+                               'buy_token_type': BoardTokenType.objects.get(name="Small Tank").id},
+                         follow=True)
+        self.assertEqual(Command.objects.all().count(), 1)
+
+        self.client.post(reverse('game.views.add_command', kwargs={'match_pk': match.pk}),
+                         data={'command_type': 'buy',
+                               'buy_token_type': BoardTokenType.objects.get(name="Small Tank").id},
+                         follow=True)
+        self.assertEqual(Command.objects.all().count(), 2)
+
+        self.client.post(reverse('game.views.add_command', kwargs={'match_pk': match.pk}),
+                         data={'command_type': 'buy',
+                               'buy_token_type': BoardTokenType.objects.get(name="Small Tank").id},
+                         follow=True)
+        self.assertEqual(Command.objects.all().count(), 3)
+
+        response = self.client.get(reverse('game.views.delete_command', kwargs={'match_pk': match.pk, 'order': 1}),
+                                   follow=True)
+        self.assertContains(response, "Command deleted")
+        self.assertEqual(Command.objects.all().count(), 2)
+
+        response = self.client.get(reverse('game.views.delete_command', kwargs={'match_pk': match.pk, 'order': 1}),
+                                   follow=True)
+        self.assertContains(response, "Command deleted")
+        self.assertEqual(Command.objects.all().count(), 1)
+
+        response = self.client.get(reverse('game.views.delete_command', kwargs={'match_pk': match.pk, 'order': 1}),
+                                   follow=True)
+        self.assertContains(response, "Invalid command")
+        self.assertEqual(Command.objects.all().count(), 1)
+
+        response = self.client.get(reverse('game.views.delete_command', kwargs={'match_pk': match.pk, 'order': 0}),
+                                   follow=True)
+        self.assertContains(response, "Command deleted")
+        self.assertEqual(Command.objects.all().count(), 0)
 
         # Player 1 movements in turn 1:
         # Small tank from reserve to headquarters
@@ -2181,6 +2226,12 @@ class MatchPlay(TestCase):
                          follow=True)
         self.assertEqual(Command.objects.all().count(), 70)
 
+        # Try to delete command after game end
+        response = self.client.get(reverse('game.views.delete_command', kwargs={'match_pk': match.pk, 'order': 0}),
+                                   follow=True)
+        self.assertContains(response, "You can not delete commands this turn")
+        self.assertEqual(Command.objects.all().count(), 70)
+
         # TODO: when another map available, try movements to other map's locations
 
     def test_kicks(self):
@@ -2270,7 +2321,7 @@ class MatchPlay(TestCase):
         match = Match.objects.get(pk=2)
         self.assertEqual(match.players.count(), 1)
         self.assertEqual(match.status, Match.STATUS_SETUP)
-        self.assertRedirects(response, match.get_absolute_url())
+        self.assertRedirects(response, reverse('game.views.start'))
 
     def test_leave_on_first_turn_two_players(self):
         players = create_test_users()

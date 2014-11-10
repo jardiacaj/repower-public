@@ -89,7 +89,9 @@
 
             <p>
                 {% for command in player_in_turn.commands.all %}
-                    {{ command.in_game_str }}<br>
+                    {{ command.in_game_str }}
+                    <a href="{% url 'game.views.delete_command' match.id command.order %}">[delete]</a>
+                    <br>
                 {% empty %}
                     You didn't add any commands for this turn yet
                 {% endfor %}
