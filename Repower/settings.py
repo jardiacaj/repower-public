@@ -22,7 +22,6 @@ INSTALLED_APPS = (
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    'account',
     'game'
 )
 
@@ -76,7 +75,7 @@ TEMPLATE_DIRS = (
     os.path.join(BASE_DIR, 'templates'),
 )
 
-LOGIN_URL = '/login/'
+LOGIN_URL = '/login'
 
 
 # Tests settings

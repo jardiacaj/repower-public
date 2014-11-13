@@ -1,20 +1,28 @@
 from collections import defaultdict
 from math import floor
+import random
+import string
 
-from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.db.models import Sum
+from django.conf import settings
+from django.contrib.auth.models import User
 from django.core.urlresolvers import reverse
 from django.db import models
-from django.db.models import Sum
-
-from account.models import Player
-
-
 
 
 
 
 # TODO sensible DB indexes
+
+
+class InvalidInviteError(Exception):
+    pass
+
+
+class UserAlreadyExistsError(Exception):
+    pass
+
 
 class PlayerCannotJoinMatch(Exception):
     pass
@@ -34,6 +42,74 @@ class MatchPlayerAlreadyReady(Exception):
 
 class CannotKickOwner(Exception):
     pass
+
+
+class PlayerManager(models.Manager):
+    def create_player(self, email, username, password):
+        user = User.objects.create_user(username, email, password)
+        player = self.create(user=user)
+        return player
+
+    def get_by_user(self, user):
+        return self.get(user=user)
+
+    def get_by_match(self, match):
+        return self.filter(match_players__in=match.players)
+
+    def get_match_candidates(self, match):
+        return self.exclude(match_players__not_in=match.players.values('pk')).filter(user__is_active=True)
+
+
+class Player(models.Model):
+    objects = PlayerManager()
+
+    user = models.OneToOneField(User, db_index=True)
+
+    def add_notification(self, text, url):
+        Notification.objects.create(
+            player=self,
+            text=text,
+            url=url
+        )
+
+    def __str__(self):
+        return self.user.username
+
+
+class InviteManager(models.Manager):
+    def create_invite(self, invitor, email):
+        code = ''.join(
+            random.choice(string.ascii_uppercase + string.digits) for _ in range(settings.INVITE_CODE_LENGTH))
+        invite = self.create(email=email, valid=True, code=code, invitor=invitor)
+        return invite
+
+
+class Invite(models.Model):
+    objects = InviteManager()
+
+    email = models.EmailField(unique=True, db_index=True)
+    valid = models.BooleanField(default=True)
+    code = models.CharField(max_length=20, db_index=True)
+    invitor = models.ForeignKey(Player, db_index=True)
+
+    def create_player(self, username, password):
+        if not self.valid:
+            raise InvalidInviteError
+        if User.objects.filter(email=self.email).exists():
+            self.valid = False
+            self.save()
+            raise UserAlreadyExistsError
+
+        self.valid = False
+        self.save()
+
+        return Player.objects.create_player(email=self.email, username=username, password=password)
+
+    def get_absolute_url(self):
+        return reverse('game.views.respond_game_invite', kwargs={'code': self.code})
+
+    def __str__(self):
+        return '%s (%s)' % (self.email, self.code)
 
 
 class Map(models.Model):
@@ -181,8 +257,10 @@ class MapRegionLink(models.Model):
 class Turn(models.Model):
     match = models.ForeignKey('Match')
     number = models.PositiveIntegerField()
+    step = models.PositiveSmallIntegerField(default=0)
     start = models.DateTimeField(auto_now_add=True)
-    end = models.DateTimeField(blank=True, null=True)
+    end = models.DateTimeField(blank=True, null=True)  # TODO Use this
+    report = models.TextField(default='')
 
     def players(self):
         return PlayerInTurn.objects.filter(turn=self)
@@ -191,7 +269,7 @@ class Turn(models.Model):
         return not self.objects.filter(match=self.match, number__gt=self.number).exists()
 
     def __str__(self):
-        return "%d in %s" % (self.number, self.match.name)
+        return "%d.%d in %s" % (self.number, self.step, self.match.name)
 
 
 class BoardTokenType(models.Model):
@@ -846,3 +924,13 @@ class MatchPlayer(models.Model):
     def __str__(self):
         return '%s in %s' % (self.player.user.username, self.match.name)
 
+
+class Notification(models.Model):
+    player = models.ForeignKey(Player)
+    read = models.BooleanField(default=False)
+    time = models.DateTimeField(auto_now_add=True)
+    text = models.CharField(max_length=300)
+    url = models.CharField(max_length=300)
+
+    def __str__(self):
+        return "%s (to %s, %s, URL: %s)" % (self.text, self.player, "read" if self.read else "unread", self.url)

@@ -5,7 +5,7 @@
 {% block content %}
     <h1>You received an invitation to play Repower</h1>
 
-    <form action="{% url 'account.views.respond_invite' code=invite.code %}" method="post">
+    <form action="{% url 'game.views.respond_game_invite' code=invite.code %}" method="post">
         <p>Invited by {{ invite.invitor.user.username }}</p>
 
         <p>Invited e-mail address is {{ invite.email }}</p>

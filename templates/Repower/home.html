@@ -5,7 +5,7 @@
 {% block content %}
     <h1>Welcome to Repower</h1>
 
-    <form action="{% url 'account.views.login' %}" method="post">
+    <form action="{% url 'game.views.login' %}" method="post">
         {% csrf_token %}
         {{ form.as_p }}
         <input type="submit" value="Log in"/>

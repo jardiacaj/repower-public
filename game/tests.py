@@ -1,9 +1,285 @@
-from django.core.urlresolvers import reverse
-from django.test import TestCase
+from unittest import skipIf
 
-from account.models import Player
-from account.tests import create_test_users, create_inactive_players
-from game.models import Match, MatchPlayer, Turn, PlayerInTurn, BoardToken, Command, BoardTokenType, MapRegion
+from django.conf import settings
+from django.contrib.auth.models import User
+from django.core import mail
+from django.test import TestCase
+from django.core.urlresolvers import reverse
+
+from game.models import Match, MatchPlayer, Turn, PlayerInTurn, BoardToken, Command, BoardTokenType, MapRegion, Player, \
+    Invite
+
+
+def create_test_users():
+    user = User.objects.create_user('Alice', 'alicemail@localhost', 'apwd')
+    player = Player(user=user)
+    player.save()
+    player_two = Player.objects.create_player('bobmail@localhost', 'Bob', 'bpwd')
+    player_three = Player.objects.create_player('carolmail@localhost', 'Carol', 'cpwd')
+    player_four = Player.objects.create_player('davemail@localhost', 'Dave', 'dpwd')
+    player_five = Player.objects.create_player('evemail@localhost', 'Eve', 'epwd')
+    return [player, player_two, player_three, player_four, player_five]
+
+
+def create_not_player():
+    return User.objects.create_user('noplayer@localhost', 'noplayer@localhost', 'apwd')
+
+
+def create_inactive_players():
+    player_one = Player.objects.create_player('Inactive', 'inactive1@localhost', 'ipwd')
+    player_one.user.is_active = False
+    player_one.user.save()
+    player_two = Player.objects.create_player('InactiveTwo', 'inactive2@localhost', 'ipwd')
+    player_two.user.is_active = False
+    player_two.user.save()
+    return [player_one, player_two]
+
+
+class AccessTests(TestCase):
+    def test_get_start_page(self):
+        response = self.client.post(reverse('game.views.home'))
+        self.assertEqual(response.status_code, 200)
+
+    def test_get_login_page(self):
+        response = self.client.post(reverse('game.views.login'))
+        self.assertEqual(response.status_code, 200)
+
+    def test_unauthenticated_invite_post(self):
+        response = self.client.post(reverse('game.views.game_invite'), data={'email': 'test1@localhost'}, follow=True)
+        self.assertContains(response, "Welcome to Repower")
+
+
+class LoginTests(TestCase):
+    def test_invalid_user(self):
+        response = self.client.post(reverse('game.views.login'), data={'username': 'test', 'password': 'test'})
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn('_auth_user_id', self.client.session)
+
+    def test_invalid_pass(self):
+        create_test_users()
+        response = self.client.post(
+            reverse('game.views.login'),
+            data={'username': 'alicemail@localhost', 'password': 'wrong'}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn('_auth_user_id', self.client.session)
+
+    def test_inactive_user(self):
+        players = create_inactive_players()
+        response = self.client.post(
+            reverse('game.views.login'),
+            data={'username': players[0].user.username, 'password': 'ipwd'}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn('_auth_user_id', self.client.session)
+        self.assertContains(response, 'This account is inactive')
+
+    def test_user_but_not_player_login(self):
+        user = create_not_player()
+        response = self.client.post(reverse('game.views.login'),
+                                    data={'username': user.username, 'password': 'apwd'}, follow=True)
+        self.assertRedirects(response, reverse('game.views.login'))
+        self.assertNotIn('_auth_user_id', self.client.session)
+        self.assertContains(response, "is not a player")
+
+    def test_valid_login(self):
+        create_test_users()
+        response = self.client.post(reverse('game.views.login'),
+                                    data={'username': 'Alice', 'password': 'apwd'}, follow=True)
+        self.assertRedirects(response, reverse('game.views.start'))
+        self.assertIn('_auth_user_id', self.client.session)
+
+    def test_valid_login_and_logout(self):
+        create_test_users()
+        response = self.client.post(reverse('game.views.login'),
+                                    data={'username': 'Alice', 'password': 'apwd'}, follow=True)
+        self.assertRedirects(response, reverse('game.views.start'))
+        self.assertIn('_auth_user_id', self.client.session)
+
+        response = self.client.get(reverse('game.views.login'), follow=True)
+        self.assertRedirects(response, reverse('game.views.start'))
+
+        response = self.client.get(reverse('game.views.home'))
+        self.assertRedirects(response, reverse('game.views.start'))
+
+        response = self.client.post(reverse('game.views.logout'), follow=True)
+        self.assertRedirects(response, reverse('game.views.login'))
+        self.assertNotIn('_auth_user_id', self.client.session)
+
+
+class InviteTests(TestCase):
+    @skipIf(settings.SKIP_MAIL_TESTS, "Mail test")
+    def test_send_invite(self):
+        create_test_users()
+        create_not_player()
+        response = self.client.post(reverse('game.views.login'),
+                                    data={'username': 'Alice', 'password': 'apwd'}, follow=True)
+        self.assertRedirects(response, reverse('game.views.start'))
+        self.assertIn('_auth_user_id', self.client.session)
+
+        response = self.client.post(reverse('game.views.game_invite'), data={'email': 'joan.ardiaca@gmail.com'})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "has been sent")
+        self.assertTrue(Invite.objects.filter(email="joan.ardiaca@gmail.com").exists())
+
+        response = self.client.post(reverse('game.views.game_invite'), data={'email': 'joan.ardiaca@gmail.com'})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "was already invited")
+
+        response = self.client.post(reverse('game.views.game_invite'), data={'email': 'noplayer@localhost'})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "You cannot invite this player")
+        self.assertFalse(Invite.objects.filter(email="noplayer@localhost").exists())
+
+        response = self.client.post(reverse('game.views.game_invite'), data={'email': 'invalidmail'})
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "has been sent")
+        self.assertFalse(Invite.objects.filter(email="invalidmail").exists())
+
+        response = self.client.post(reverse('game.views.game_invite'), data={'email': 'test1@localhost'})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "has been sent")
+        self.assertTrue(Invite.objects.filter(email="test1@localhost").exists())
+
+        response = self.client.post(reverse('game.views.game_invite'), data={'email': 'test1@localhost'})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "was already invited")
+
+        response = self.client.post(reverse('game.views.game_invite'), data={'email': 'test2@localhost'})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "has been sent")
+        self.assertTrue(Invite.objects.filter(email="test2@localhost").exists())
+
+        response = self.client.post(reverse('game.views.game_invite'), data={'email': 'test3@localhost'})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "You used up all your invites")
+        self.assertFalse(Invite.objects.filter(email="test3@localhost").exists())
+
+    @skipIf(settings.SKIP_MAIL_TESTS, "Mail test")
+    def test_send_and_accept_invite(self):
+        create_test_users()
+
+        # Log in
+        response = self.client.post(reverse('game.views.login'),
+                                    data={'username': 'Alice', 'password': 'apwd'}, follow=True)
+        self.assertRedirects(response, reverse('game.views.start'))
+        self.assertIn('_auth_user_id', self.client.session)
+
+        # Send invite
+        response = self.client.post(reverse('game.views.game_invite'), data={'email': 'test1@localhost'})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'has been sent')
+
+        invite = Invite.objects.get(email='test1@localhost')
+        self.assertIsNotNone(invite)
+        self.assertEqual(invite.invitor, Player.objects.get_by_user(User.objects.get(email='alicemail@localhost')))
+        self.assertTrue(invite.valid)
+        self.assertEqual(len(invite.code), settings.INVITE_CODE_LENGTH)
+
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn(invite.get_absolute_url(), mail.outbox[0].body)
+        self.assertEqual(mail.outbox[0].from_email, settings.INVITE_MAIL_SENDER_ADDRESS)
+        self.assertEqual(mail.outbox[0].to, [invite.email])
+
+        # Log out
+        response = self.client.post(reverse('game.views.logout'), follow=True)
+        self.assertRedirects(response, reverse('game.views.login'))
+        self.assertNotIn('_auth_user_id', self.client.session)
+
+        # Wrong respond invite page
+        response = self.client.get(reverse('game.views.respond_game_invite', kwargs={'code': 'fakecode'}))
+        self.assertEqual(response.status_code, 404)
+
+        # Respond invite page
+        response = self.client.get(invite.get_absolute_url())
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(User.objects.filter(email='test1@localhost').exists())
+
+        # Post without post-data
+        response = self.client.post(
+            invite.get_absolute_url()
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "field is required")
+        self.assertFalse(User.objects.filter(email='test1@localhost').exists())
+
+        # Post without password
+        response = self.client.post(
+            invite.get_absolute_url(),
+            data={'username': 'blub'}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "field is required")
+        self.assertFalse(User.objects.filter(email='test1@localhost').exists())
+
+        # Post without password confirmation
+        response = self.client.post(
+            invite.get_absolute_url(),
+            data={'username': 'blub', 'password': 'badpwd'}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "field is required")
+        self.assertFalse(User.objects.filter(email='test1@localhost').exists())
+
+        # Post with wrong password confirmation
+        response = self.client.post(
+            invite.get_absolute_url(),
+            data={'username': 'blub', 'password': 'badpwd', 'password_confirm': 'very_bad_pwd'}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Your passwords do not match")
+        self.assertFalse(User.objects.filter(email='test1@localhost').exists())
+
+        # Post without username
+        response = self.client.post(
+            invite.get_absolute_url(),
+            data={'password': 'good_pwd', 'password_confirm': 'good_pwd'},
+            follow=True
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "field is required")
+        self.assertFalse(User.objects.filter(email='test1@localhost').exists())
+
+        # Post already existing username
+        response = self.client.post(
+            invite.get_absolute_url(),
+            data={'username': 'Alice', 'password': 'good_pwd', 'password_confirm': 'good_pwd'},
+            follow=True
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "This user name is alredy taken.")
+        self.assertFalse(User.objects.filter(email='test1@localhost').exists())
+
+        # Post correctly
+        response = self.client.post(
+            invite.get_absolute_url(),
+            data={'username': 'blub', 'password': 'good_pwd', 'password_confirm': 'good_pwd'},
+            follow=True
+        )
+        self.assertRedirects(response, reverse('game.views.home'))
+        self.assertContains(response, "Please log in")
+        self.assertTrue(User.objects.filter(email='test1@localhost').exists())
+        self.assertTrue(User.objects.filter(username='blub').exists())
+        self.assertTrue(Player.objects.get_by_user(User.objects.get(email='test1@localhost')))
+
+        # Try to reuse invite
+        response = self.client.get(invite.get_absolute_url(), follow=True)
+        self.assertRedirects(response, reverse('game.views.home'))
+        self.assertContains(response, "This invite cannot be used")
+
+        response = self.client.post(
+            invite.get_absolute_url(),
+            data={'username': 'blub2', 'password': 'good_pwd', 'password_confirm': 'good_pwd'},
+            follow=True
+        )
+        self.assertRedirects(response, reverse('game.views.home'))
+        self.assertContains(response, "This invite cannot be used")
+
+        # Log in
+        response = self.client.post(reverse('game.views.login'),
+                                    data={'username': 'blub', 'password': 'good_pwd'}, follow=True)
+        self.assertRedirects(response, reverse('game.views.start'))
+        self.assertIn('_auth_user_id', self.client.session)
 
 
 class UnauthenticatedAccess(TestCase):
@@ -84,7 +360,7 @@ class MatchPlay(TestCase):
         inactive_players = create_inactive_players()
 
         # Log in alice
-        response = self.client.post(reverse('account.views.login'),
+        response = self.client.post(reverse('game.views.login'),
                                     data={'username': 'Alice', 'password': 'apwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
@@ -258,11 +534,11 @@ class MatchPlay(TestCase):
         self.assertEqual(match.status, Match.STATUS_SETUP)
 
         # Logout and login as player 1
-        response = self.client.post(reverse('account.views.logout'), follow=True)
-        self.assertRedirects(response, reverse('account.views.login'))
+        response = self.client.post(reverse('game.views.logout'), follow=True)
+        self.assertRedirects(response, reverse('game.views.login'))
         self.assertNotIn('_auth_user_id', self.client.session)
 
-        response = self.client.post(reverse('account.views.login'),
+        response = self.client.post(reverse('game.views.login'),
                                     data={'username': players[1], 'password': 'bpwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
@@ -277,11 +553,11 @@ class MatchPlay(TestCase):
         self.assertEqual(match.status, Match.STATUS_SETUP)
 
         # Logout and login as player 4
-        response = self.client.post(reverse('account.views.logout'), follow=True)
-        self.assertRedirects(response, reverse('account.views.login'))
+        response = self.client.post(reverse('game.views.logout'), follow=True)
+        self.assertRedirects(response, reverse('game.views.login'))
         self.assertNotIn('_auth_user_id', self.client.session)
 
-        response = self.client.post(reverse('account.views.login'),
+        response = self.client.post(reverse('game.views.login'),
                                     data={'username': players[4], 'password': 'epwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
@@ -296,11 +572,11 @@ class MatchPlay(TestCase):
         self.assertEqual(match.status, Match.STATUS_SETUP)
 
         # Logout and login as player 3
-        response = self.client.post(reverse('account.views.logout'), follow=True)
-        self.assertRedirects(response, reverse('account.views.login'))
+        response = self.client.post(reverse('game.views.logout'), follow=True)
+        self.assertRedirects(response, reverse('game.views.login'))
         self.assertNotIn('_auth_user_id', self.client.session)
 
-        response = self.client.post(reverse('account.views.login'),
+        response = self.client.post(reverse('game.views.login'),
                                     data={'username': players[3], 'password': 'dpwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
@@ -323,7 +599,7 @@ class MatchPlay(TestCase):
         inactive_players = create_inactive_players()
 
         # Login
-        response = self.client.post(reverse('account.views.login'),
+        response = self.client.post(reverse('game.views.login'),
                                     data={'username': players[0].user.username, 'password': 'apwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
@@ -449,11 +725,11 @@ class MatchPlay(TestCase):
         self.assertEqual(match.status, Match.STATUS_SETUP)
 
         # Logout and login as player 1
-        response = self.client.post(reverse('account.views.logout'), follow=True)
-        self.assertRedirects(response, reverse('account.views.login'))
+        response = self.client.post(reverse('game.views.logout'), follow=True)
+        self.assertRedirects(response, reverse('game.views.login'))
         self.assertNotIn('_auth_user_id', self.client.session)
 
-        response = self.client.post(reverse('account.views.login'),
+        response = self.client.post(reverse('game.views.login'),
                                     data={'username': players[1], 'password': 'bpwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
@@ -582,11 +858,11 @@ class MatchPlay(TestCase):
         self.assertEqual(Command.objects.all().count(), 0)
 
         # Logout and login as player 2
-        response = self.client.post(reverse('account.views.logout'), follow=True)
-        self.assertRedirects(response, reverse('account.views.login'))
+        response = self.client.post(reverse('game.views.logout'), follow=True)
+        self.assertRedirects(response, reverse('game.views.login'))
         self.assertNotIn('_auth_user_id', self.client.session)
 
-        response = self.client.post(reverse('account.views.login'),
+        response = self.client.post(reverse('game.views.login'),
                                     data={'username': players[2], 'password': 'cpwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
@@ -620,11 +896,11 @@ class MatchPlay(TestCase):
         self.assertContains(response, "You can not see this match")
 
         # Logout and login as player 1
-        response = self.client.post(reverse('account.views.logout'), follow=True)
-        self.assertRedirects(response, reverse('account.views.login'))
+        response = self.client.post(reverse('game.views.logout'), follow=True)
+        self.assertRedirects(response, reverse('game.views.login'))
         self.assertNotIn('_auth_user_id', self.client.session)
 
-        response = self.client.post(reverse('account.views.login'),
+        response = self.client.post(reverse('game.views.login'),
                                     data={'username': players[1], 'password': 'bpwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
@@ -745,11 +1021,11 @@ class MatchPlay(TestCase):
         self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[0]).latest_player_in_turn().ready)
 
         # Logout and login as player 0
-        response = self.client.post(reverse('account.views.logout'), follow=True)
-        self.assertRedirects(response, reverse('account.views.login'))
+        response = self.client.post(reverse('game.views.logout'), follow=True)
+        self.assertRedirects(response, reverse('game.views.login'))
         self.assertNotIn('_auth_user_id', self.client.session)
 
-        response = self.client.post(reverse('account.views.login'),
+        response = self.client.post(reverse('game.views.login'),
                                     data={'username': players[0], 'password': 'apwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
@@ -933,11 +1209,11 @@ class MatchPlay(TestCase):
         self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[1]).latest_player_in_turn().ready)
 
         # Logout and login as player 1
-        response = self.client.post(reverse('account.views.logout'), follow=True)
-        self.assertRedirects(response, reverse('account.views.login'))
+        response = self.client.post(reverse('game.views.logout'), follow=True)
+        self.assertRedirects(response, reverse('game.views.login'))
         self.assertNotIn('_auth_user_id', self.client.session)
 
-        response = self.client.post(reverse('account.views.login'),
+        response = self.client.post(reverse('game.views.login'),
                                     data={'username': players[1], 'password': 'bpwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
@@ -1116,11 +1392,11 @@ class MatchPlay(TestCase):
         self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[0]).latest_player_in_turn().ready)
 
         # Logout and login as player 0
-        response = self.client.post(reverse('account.views.logout'), follow=True)
-        self.assertRedirects(response, reverse('account.views.login'))
+        response = self.client.post(reverse('game.views.logout'), follow=True)
+        self.assertRedirects(response, reverse('game.views.login'))
         self.assertNotIn('_auth_user_id', self.client.session)
 
-        response = self.client.post(reverse('account.views.login'),
+        response = self.client.post(reverse('game.views.login'),
                                     data={'username': players[0], 'password': 'apwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
@@ -1302,11 +1578,11 @@ class MatchPlay(TestCase):
         self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[1]).latest_player_in_turn().ready)
 
         # Logout and login as player 1
-        response = self.client.post(reverse('account.views.logout'), follow=True)
-        self.assertRedirects(response, reverse('account.views.login'))
+        response = self.client.post(reverse('game.views.logout'), follow=True)
+        self.assertRedirects(response, reverse('game.views.login'))
         self.assertNotIn('_auth_user_id', self.client.session)
 
-        response = self.client.post(reverse('account.views.login'),
+        response = self.client.post(reverse('game.views.login'),
                                     data={'username': players[1], 'password': 'bpwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
@@ -1531,11 +1807,11 @@ class MatchPlay(TestCase):
         self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[0]).latest_player_in_turn().ready)
 
         # Logout and login as player 0
-        response = self.client.post(reverse('account.views.logout'), follow=True)
-        self.assertRedirects(response, reverse('account.views.login'))
+        response = self.client.post(reverse('game.views.logout'), follow=True)
+        self.assertRedirects(response, reverse('game.views.login'))
         self.assertNotIn('_auth_user_id', self.client.session)
 
-        response = self.client.post(reverse('account.views.login'),
+        response = self.client.post(reverse('game.views.login'),
                                     data={'username': players[0], 'password': 'apwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
@@ -1734,11 +2010,11 @@ class MatchPlay(TestCase):
         self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[1]).latest_player_in_turn().ready)
 
         # Logout and login as player 1
-        response = self.client.post(reverse('account.views.logout'), follow=True)
-        self.assertRedirects(response, reverse('account.views.login'))
+        response = self.client.post(reverse('game.views.logout'), follow=True)
+        self.assertRedirects(response, reverse('game.views.login'))
         self.assertNotIn('_auth_user_id', self.client.session)
 
-        response = self.client.post(reverse('account.views.login'),
+        response = self.client.post(reverse('game.views.login'),
                                     data={'username': players[1], 'password': 'bpwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
@@ -1937,11 +2213,11 @@ class MatchPlay(TestCase):
         self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[0]).latest_player_in_turn().ready)
 
         # Logout and login as player 0
-        response = self.client.post(reverse('account.views.logout'), follow=True)
-        self.assertRedirects(response, reverse('account.views.login'))
+        response = self.client.post(reverse('game.views.logout'), follow=True)
+        self.assertRedirects(response, reverse('game.views.login'))
         self.assertNotIn('_auth_user_id', self.client.session)
 
-        response = self.client.post(reverse('account.views.login'),
+        response = self.client.post(reverse('game.views.login'),
                                     data={'username': players[0], 'password': 'apwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
@@ -2112,11 +2388,11 @@ class MatchPlay(TestCase):
         self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[1]).latest_player_in_turn().ready)
 
         # Logout and login as player 1
-        response = self.client.post(reverse('account.views.logout'), follow=True)
-        self.assertRedirects(response, reverse('account.views.login'))
+        response = self.client.post(reverse('game.views.logout'), follow=True)
+        self.assertRedirects(response, reverse('game.views.login'))
         self.assertNotIn('_auth_user_id', self.client.session)
 
-        response = self.client.post(reverse('account.views.login'),
+        response = self.client.post(reverse('game.views.login'),
                                     data={'username': players[1], 'password': 'bpwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
@@ -2250,7 +2526,7 @@ class MatchPlay(TestCase):
     def test_kicks(self):
         players = create_test_users()
 
-        response = self.client.post(reverse('account.views.login'),
+        response = self.client.post(reverse('game.views.login'),
                                     data={'username': players[0].user.username, 'password': 'apwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
@@ -2276,9 +2552,9 @@ class MatchPlay(TestCase):
             reverse('game.views.match_invite', kwargs={'match_pk': match.pk, 'player_pk': players[1].pk}), follow=True)
         self.assertEqual(match.players.count(), 2)
 
-        response = self.client.get(reverse('account.views.logout'), follow=True)
+        response = self.client.get(reverse('game.views.logout'), follow=True)
 
-        response = self.client.post(reverse('account.views.login'),
+        response = self.client.post(reverse('game.views.login'),
                                     data={'username': players[1], 'password': 'bpwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
@@ -2291,7 +2567,7 @@ class MatchPlay(TestCase):
     def test_leave_during_setup(self):
         players = create_test_users()
 
-        response = self.client.post(reverse('account.views.login'),
+        response = self.client.post(reverse('game.views.login'),
                                     data={'username': players[0].user.username, 'password': 'apwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
@@ -2323,9 +2599,9 @@ class MatchPlay(TestCase):
             reverse('game.views.match_invite', kwargs={'match_pk': match.pk, 'player_pk': players[1].pk}), follow=True)
         self.assertEqual(match.players.count(), 2)
 
-        response = self.client.get(reverse('account.views.logout'), follow=True)
+        response = self.client.get(reverse('game.views.logout'), follow=True)
 
-        response = self.client.post(reverse('account.views.login'),
+        response = self.client.post(reverse('game.views.login'),
                                     data={'username': players[1], 'password': 'bpwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
@@ -2341,7 +2617,7 @@ class MatchPlay(TestCase):
         inactive_players = create_inactive_players()
 
         # Login
-        response = self.client.post(reverse('account.views.login'),
+        response = self.client.post(reverse('game.views.login'),
                                     data={'username': players[0].user.username, 'password': 'apwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
@@ -2384,11 +2660,11 @@ class MatchPlay(TestCase):
         self.assertEqual(match.status, Match.STATUS_SETUP)
 
         # Logout and login as player 1
-        response = self.client.post(reverse('account.views.logout'), follow=True)
-        self.assertRedirects(response, reverse('account.views.login'))
+        response = self.client.post(reverse('game.views.logout'), follow=True)
+        self.assertRedirects(response, reverse('game.views.login'))
         self.assertNotIn('_auth_user_id', self.client.session)
 
-        response = self.client.post(reverse('account.views.login'),
+        response = self.client.post(reverse('game.views.login'),
                                     data={'username': players[1], 'password': 'bpwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
@@ -2438,7 +2714,7 @@ class MatchListing(TestCase):
         players = create_test_users()
 
         # Login
-        response = self.client.post(reverse('account.views.login'),
+        response = self.client.post(reverse('game.views.login'),
                                     data={'username': players[0].user.username, 'password': 'apwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
@@ -2496,11 +2772,11 @@ class MatchListing(TestCase):
         self.assertContains(response, match_public.name)
 
         # Logout and login as player 1
-        response = self.client.post(reverse('account.views.logout'), follow=True)
-        self.assertRedirects(response, reverse('account.views.login'))
+        response = self.client.post(reverse('game.views.logout'), follow=True)
+        self.assertRedirects(response, reverse('game.views.login'))
         self.assertNotIn('_auth_user_id', self.client.session)
 
-        response = self.client.post(reverse('account.views.login'),
+        response = self.client.post(reverse('game.views.login'),
                                     data={'username': players[1], 'password': 'bpwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
