@@ -1,5 +1,8 @@
 import os
 
+from django.conf import global_settings
+
+
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 
 SECRET_KEY = '2b2hfefg76_@rvvj4$(ql&me)zx3%%=rda3t+i*t!p+&frstym'
@@ -14,6 +17,9 @@ ADMINS = (('Joan', 'joan.ardiaca@gmail.com'), )
 
 
 # Application definition
+
+TEMPLATE_CONTEXT_PROCESSORS = global_settings.TEMPLATE_CONTEXT_PROCESSORS + (
+"game.context_processors.player_processor", )
 
 INSTALLED_APPS = (
     'django.contrib.admin',

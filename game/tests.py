@@ -9,6 +9,7 @@ from django.core.urlresolvers import reverse
 from game.models import Match, MatchPlayer, Turn, PlayerInTurn, BoardToken, Command, BoardTokenType, MapRegion, Player, \
     Invite
 
+# TODO: notification tests
 
 def create_test_users():
     user = User.objects.create_user('Alice', 'alicemail@localhost', 'apwd')
@@ -285,6 +286,10 @@ class InviteTests(TestCase):
 class UnauthenticatedAccess(TestCase):
     def test_game_start_no_login(self):
         response = self.client.get(reverse('game.views.start'), follow=True)
+        self.assertContains(response, "Welcome to Repower")
+
+    def test_notifications_no_login(self):
+        response = self.client.get(reverse('game.views.notifications'), follow=True)
         self.assertContains(response, "Welcome to Repower")
 
     def test_new_match_no_login(self):
@@ -2495,7 +2500,7 @@ class MatchPlay(TestCase):
         self.assertEqual(BoardToken.objects.filter(owner=players_in_turn[9][1]).count(), 13)
 
         self.assertEqual(players_in_turn[9][0].power_points, 0)
-        self.assertEqual(players_in_turn[9][1].power_points, 8)
+        self.assertEqual(players_in_turn[9][1].power_points, 7)
 
         self.assertTrue(players_in_turn[9][0].defeated)
         self.assertFalse(players_in_turn[9][1].defeated)

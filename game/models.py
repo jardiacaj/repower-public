@@ -11,11 +11,6 @@ from django.core.urlresolvers import reverse
 from django.db import models
 
 
-
-
-# TODO sensible DB indexes
-
-
 class InvalidInviteError(Exception):
     pass
 
@@ -72,6 +67,15 @@ class Player(models.Model):
             url=url
         )
 
+    def unread_notifications(self):
+        return Notification.objects.filter(player=self, read=False)
+
+    def set_all_notifications_read(self):
+        Notification.objects.filter(player=self, read=False).update(read=True)
+
+    def get_absolute_url(self):
+        return reverse('game.views.view_account', kwargs={'username': self.user.username})
+
     def __str__(self):
         return self.user.username
 
@@ -88,7 +92,7 @@ class Invite(models.Model):
     objects = InviteManager()
 
     email = models.EmailField(unique=True, db_index=True)
-    valid = models.BooleanField(default=True)
+    valid = models.BooleanField(default=True, db_index=True)
     code = models.CharField(max_length=20, db_index=True)
     invitor = models.ForeignKey(Player, db_index=True)
 
@@ -102,6 +106,11 @@ class Invite(models.Model):
 
         self.valid = False
         self.save()
+
+        self.invitor.add_notification(
+            "%s, invited by you, has joined Repower!" % username,
+            self.invitor.get_absolute_url()
+        )
 
         return Player.objects.create_player(email=self.email, username=username, password=password)
 
@@ -138,6 +147,10 @@ class Map(models.Model):
                         return True
             return False
 
+        if source.map != destination.map:
+            return False
+        if token.owner.match_player.match.map != source.map:
+            return False
         if destination.countries_with_this_reserve.exists() and not token.type.special_attack_reserves:
             return False
         if source == destination and not token.special_missile:
@@ -255,9 +268,12 @@ class MapRegionLink(models.Model):
 
 
 class Turn(models.Model):
+    class Meta:
+        unique_together = (("match", "number", "step"),)
+
     match = models.ForeignKey('Match')
-    number = models.PositiveIntegerField()
-    step = models.PositiveSmallIntegerField(default=0)
+    number = models.PositiveIntegerField(db_index=True)
+    step = models.PositiveSmallIntegerField(default=0, db_index=True)
     start = models.DateTimeField(auto_now_add=True)
     end = models.DateTimeField(blank=True, null=True)  # TODO Use this
     report = models.TextField(default='')
@@ -339,10 +355,13 @@ class PlayerInTurn(models.Model):
     def status_box(self):
         return "☑" if self.ready else "☐"
 
+    def is_active(self):
+        return self.match_player.is_active()
+
     def can_add_commands(self):
         if not self.is_latest():
             return False
-        elif self.defeated or self.left_match:
+        elif not self.is_active():
             return False
         elif not self.match_player.match.is_in_progress():
             return False
@@ -368,10 +387,7 @@ class PlayerInTurn(models.Model):
             self.power_points = 0
             self.set_defeated()
             captured_tokens = BoardToken.objects.filter(owner=self)
-            for token in captured_tokens:
-                token.owner = defeater
-                token.position = defeater.match_player.country.reserve
-                token.save()
+            captured_tokens.update(owner=defeater, position=defeater.match_player.country.reserve)
         else:
             if not BoardToken.objects.filter(owner=self).exists() and self.power_points == 0:
                 self.set_defeated()
@@ -416,6 +432,14 @@ class PlayerInTurn(models.Model):
         self.match_player.save()
         self.match_player.match.check_and_process_end_of_game()
         BoardToken.objects.filter(owner=self).delete()
+
+        for match_player in self.match_player.match.players.all():
+            if match_player.is_active():
+                match_player.player.add_notification(
+                    "%s left %s." % (self.match_player.player.user.username, self.match_player.match.name),
+                    self.match_player.match.get_absolute_url()
+                )
+
         if self.match_player.match.is_in_progress():
             self.match_player.match.check_all_players_ready()
 
@@ -461,7 +485,7 @@ class Command(models.Model):
     )
 
     player_in_turn = models.ForeignKey(PlayerInTurn, related_name='commands')
-    order = models.PositiveSmallIntegerField()
+    order = models.PositiveSmallIntegerField(db_index=True)
     type = models.CharField(max_length=3, choices=TYPES)
     location = models.ForeignKey(MapRegion, null=True, blank=True, related_name='+')
     token_type = models.ForeignKey(BoardTokenType, null=True, blank=True, related_name='+')
@@ -615,8 +639,8 @@ class Match(models.Model):
     name = models.CharField(max_length=50)
     owner = models.ForeignKey(Player, related_name='owner_of')
     map = models.ForeignKey(Map, related_name='matches')
-    status = models.CharField(max_length=3, choices=STATUSES)
-    public = models.BooleanField(default=False)
+    status = models.CharField(max_length=3, choices=STATUSES, db_index=True)
+    public = models.BooleanField(default=False, db_index=True)
     time_limit = models.DateTimeField(blank=True, null=True)  # TODO: use this
     round_time_limit = models.DateTimeField(blank=True, null=True)  # TODO: use this
 
@@ -683,6 +707,8 @@ class Match(models.Model):
             player = players[i]
             player.country = countries[i]
             player.save()
+
+            player.player.add_notification("Match %s started!" % self.name, self.get_absolute_url())
 
             player_in_turn = PlayerInTurn(turn=turn, match_player=player, power_points=0)
             player_in_turn.save()
@@ -771,10 +797,19 @@ class Match(models.Model):
                              for match_player
                              in self.players.all()
                              if match_player.is_active()]
-        if len(remaining_players) == 1:
+        if len(remaining_players) <= 1:
             self.status = self.STATUS_FINISHED
-        elif len(remaining_players) == 0:
-            self.status = self.STATUS_FINISHED
+            for match_player in self.players.all():
+                if match_player in remaining_players:
+                    match_player.player.add_notification(
+                        "Congratulations! You won the match %s!" % self.name,
+                        self.get_absolute_url()
+                    )
+                elif not match_player.left_match:
+                    match_player.player.add_notification(
+                        "You lost the match %s" % self.name,
+                        self.get_absolute_url()
+                    )
         self.save()
 
     def process_turn(self):
@@ -840,9 +875,18 @@ class Match(models.Model):
         # Check end of game
         self.check_and_process_end_of_game()
 
-        # Collect power points
-        for player_in_turn in PlayerInTurn.objects.filter(turn=incoming_turn):
-            player_in_turn.collect_power_points()
+        if self.is_in_progress():
+            # Collect power points
+            for player_in_turn in PlayerInTurn.objects.filter(turn=incoming_turn):
+                player_in_turn.collect_power_points()
+
+            # Send notifications
+            for player_in_turn in PlayerInTurn.objects.filter(turn=incoming_turn):
+                if player_in_turn.is_active():
+                    player_in_turn.match_player.player.add_notification(
+                        "New turn (%d) for match %s" % (incoming_turn.number, self.name),
+                        self.get_absolute_url()
+                    )
 
     def get_absolute_url(self):
         return reverse('game.views.view_match', kwargs={'match_pk': self.pk})
@@ -886,6 +930,10 @@ class MatchPlayer(models.Model):
         if self.match.owner == self:
             raise CannotKickOwner()
         self.delete()
+        self.player.add_notification(
+            "You have been kicked from %s." % self.match.name,
+            self.match.get_absolute_url()
+        )
 
     def leave(self):
         if self.match.is_in_progress():
@@ -894,8 +942,21 @@ class MatchPlayer(models.Model):
             if self.match.owner.pk == self.pk:
                 self.match.status = Match.STATUS_SETUP_ABORTED
                 self.match.save()
+                for match_player in self.match.players.all():
+                    match_player.player.add_notification(
+                        "The match %s has been aborted because the owner (%s) left." %
+                        (self.match.name, self.player.user.username),
+                        self.match.get_absolute_url()
+                    )
+
             else:
                 self.delete()
+                for match_player in self.match.players.all():
+                    match_player.player.add_notification(
+                        "%s left from %s." %
+                        (self.player.user.username, self.match.name),
+                        self.match.get_absolute_url()
+                    )
         else:
             raise MatchInWrongStatus()
 
@@ -927,7 +988,7 @@ class MatchPlayer(models.Model):
 
 class Notification(models.Model):
     player = models.ForeignKey(Player)
-    read = models.BooleanField(default=False)
+    read = models.BooleanField(default=False, db_index=True)
     time = models.DateTimeField(auto_now_add=True)
     text = models.CharField(max_length=300)
     url = models.CharField(max_length=300)

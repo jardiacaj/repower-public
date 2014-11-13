@@ -20,6 +20,9 @@
     {% endif %}
     - <a href="">About...</a>
     - <a href="">Manual</a>
+    {% if user.is_authenticated %}
+        - <a href="{% url 'game.views.notifications' %}">{{ player.unread_notifications.count }} notifications</a>
+    {% endif %}
 </p>
 
 {% if messages %}

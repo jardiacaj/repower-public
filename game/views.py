@@ -14,7 +14,7 @@ from django import forms
 
 from game.models import Match, MatchPlayer, PlayerCannotJoinMatch, MatchIsFull, MatchInWrongStatus, \
     MatchPlayerAlreadyReady, Map, BoardTokenType, TokenConversion, TokenValueConversion, MapCountry, MapRegion, Command, \
-    Turn, PlayerInTurn, Player, Invite
+    Turn, PlayerInTurn, Player, Invite, Notification
 
 
 class InviteForm(forms.Form):
@@ -69,7 +69,13 @@ def logout(request):
     return logout_then_login(request)
 
 
-def view_account(request):
+@login_required
+def view_own_account(request):
+    return view_account(request, request.user.username)
+
+
+@login_required
+def view_account(request, username):
     pass  # TODO
 
 
@@ -165,6 +171,14 @@ def start(request):
 
 
 @login_required
+def notifications(request):
+    player = Player.objects.get_by_user(request.user)
+    notifications = list(Notification.objects.filter(player=player))
+    player.set_all_notifications_read()
+    return render(request, 'game/notifications.html', {'notifications': notifications})
+
+
+@login_required
 def public_matches(request):
     filter = request.GET.get('filter', 'all')
     filter_str = "all public matches"
@@ -203,14 +217,18 @@ def new_match(request):
 @login_required
 def match_invite(request, match_pk, player_pk=None):
     match = get_object_or_404(Match, pk=match_pk)
+    player = Player.objects.get_by_user(request.user)
 
     if player_pk is not None:
-        player = get_object_or_404(Player, pk=player_pk)
+        player_to_invite = get_object_or_404(Player, pk=player_pk)
         if not match.owner.user == request.user and not match.public:
             messages.error(request, 'Only the owner can invite in private games')
             return HttpResponseRedirect(match.get_absolute_url())
         try:
-            match.join_player(player)
+            match.join_player(player_to_invite)
+            if player != player_to_invite:
+                player_to_invite.add_notification("%s invited you to play in'%s'" % (player.user.username, match.name),
+                                                  match.get_absolute_url())
             return HttpResponseRedirect(match.get_absolute_url())
         except PlayerCannotJoinMatch:
             messages.error(request, 'This player can not be invited')
@@ -244,7 +262,6 @@ def view_match(request, match_pk):
 
     context = {
         'match': match,
-        'player': player,
         'match_player': match_player,
         'client_is_in_game': client_is_in_game,
         'is_owner': is_owner,
