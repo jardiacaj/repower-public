@@ -9,7 +9,6 @@ from django.core.urlresolvers import reverse
 from game.models import Match, MatchPlayer, Turn, PlayerInTurn, BoardToken, Command, BoardTokenType, MapRegion, Player, \
     Invite
 
-# TODO: notification tests
 
 def create_test_users():
     user = User.objects.create_user('Alice', 'alicemail@localhost', 'apwd')
@@ -44,10 +43,6 @@ class AccessTests(TestCase):
     def test_get_login_page(self):
         response = self.client.post(reverse('game.views.login'))
         self.assertEqual(response.status_code, 200)
-
-    def test_unauthenticated_invite_post(self):
-        response = self.client.post(reverse('game.views.game_invite'), data={'email': 'test1@localhost'}, follow=True)
-        self.assertContains(response, "Welcome to Repower")
 
 
 class LoginTests(TestCase):
@@ -282,8 +277,31 @@ class InviteTests(TestCase):
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
 
+        # Log out
+        response = self.client.post(reverse('game.views.logout'), follow=True)
+        self.assertRedirects(response, reverse('game.views.login'))
+        self.assertNotIn('_auth_user_id', self.client.session)
+
+        # Log in
+        response = self.client.post(reverse('game.views.login'),
+                                    data={'username': 'Alice', 'password': 'apwd'}, follow=True)
+        self.assertRedirects(response, reverse('game.views.start'))
+        self.assertIn('_auth_user_id', self.client.session)
+        self.assertContains(response, "1 notifications")
+
+        # Load notifications page
+        response = self.client.get(reverse('game.views.notifications'), follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "0 notifications")
+        self.assertContains(response, "NEW")
+        self.assertContains(response, "joined Repower")
+
 
 class UnauthenticatedAccess(TestCase):
+    def test_game_invite_no_login(self):
+        response = self.client.post(reverse('game.views.game_invite'), data={'email': 'test1@localhost'}, follow=True)
+        self.assertContains(response, "Welcome to Repower")
+
     def test_game_start_no_login(self):
         response = self.client.get(reverse('game.views.start'), follow=True)
         self.assertContains(response, "Welcome to Repower")
@@ -547,6 +565,13 @@ class MatchPlay(TestCase):
                                     data={'username': players[1], 'password': 'bpwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
+
+        # Load notifications page
+        response = self.client.get(reverse('game.views.notifications'), follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "0 notifications")
+        self.assertContains(response, "NEW")
+        self.assertContains(response, "invited you to play")
 
         # Make ready
         response = self.client.get(reverse('game.views.ready', kwargs={'match_pk': match.pk}), follow=True)
@@ -1156,6 +1181,13 @@ class MatchPlay(TestCase):
         self.assertEqual(players_in_turn[2][0].power_points, 1)
         self.assertEqual(players_in_turn[2][1].power_points, 0)
 
+        # Load notifications page
+        response = self.client.get(reverse('game.views.notifications'), follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "0 notifications")
+        self.assertContains(response, "NEW")
+        self.assertContains(response, "New turn")
+
         # Player 0 movements in turn 2:
         # Fighter from headquarters to South 7
         # Fighter from headquarters to South 7 (won't work)
@@ -1222,6 +1254,14 @@ class MatchPlay(TestCase):
                                     data={'username': players[1], 'password': 'bpwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
+
+        # Load notifications page
+        response = self.client.get(reverse('game.views.notifications'), follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "0 notifications")
+        self.assertContains(response, "NEW")
+        self.assertContains(response, "New turn")
+        self.assertContains(response, "invited you to play")
 
         # Player 1 movements in turn 2:
         # Small Tank from South 5 to North 9 (won't work)
@@ -2526,16 +2566,42 @@ class MatchPlay(TestCase):
         self.assertContains(response, "You can not delete commands this turn")
         self.assertEqual(Command.objects.all().count(), 70)
 
+        # Load notifications page
+        response = self.client.get(reverse('game.views.notifications'), follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "0 notifications")
+        self.assertContains(response, "NEW")
+        self.assertContains(response, "Congratulations")
+
+        # Logout and login as player 0
+        response = self.client.post(reverse('game.views.logout'), follow=True)
+        self.assertRedirects(response, reverse('game.views.login'))
+        self.assertNotIn('_auth_user_id', self.client.session)
+
+        response = self.client.post(reverse('game.views.login'),
+                                    data={'username': players[0], 'password': 'apwd'}, follow=True)
+        self.assertRedirects(response, reverse('game.views.start'))
+        self.assertIn('_auth_user_id', self.client.session)
+
+        # Load notifications page
+        response = self.client.get(reverse('game.views.notifications'), follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "0 notifications")
+        self.assertContains(response, "NEW")
+        self.assertContains(response, "You lost")
+
         # TODO: when another map available, try movements to other map's locations
 
     def test_kicks(self):
         players = create_test_users()
 
+        # Login as player 0
         response = self.client.post(reverse('game.views.login'),
                                     data={'username': players[0].user.username, 'password': 'apwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
 
+        # Create match
         response = self.client.get(reverse('game.views.new_match'))
         self.assertEqual(response.status_code, 200)
 
@@ -2544,19 +2610,23 @@ class MatchPlay(TestCase):
         match = Match.objects.get(pk=1)
         self.assertTrue(match)
 
+        # Invite player 1
         response = self.client.get(
             reverse('game.views.match_invite', kwargs={'match_pk': match.pk, 'player_pk': players[1].pk}), follow=True)
         self.assertEqual(match.players.count(), 2)
 
+        # Kick player 1
         response = self.client.get(
             reverse('game.views.kick', kwargs={'match_pk': match.pk, 'player_pk': players[1].pk}), follow=True)
         self.assertEqual(match.players.count(), 1)
         self.assertRedirects(response, match.get_absolute_url())
 
+        # Invite player 1
         response = self.client.get(
             reverse('game.views.match_invite', kwargs={'match_pk': match.pk, 'player_pk': players[1].pk}), follow=True)
         self.assertEqual(match.players.count(), 2)
 
+        # Logout and login as player 1
         response = self.client.get(reverse('game.views.logout'), follow=True)
 
         response = self.client.post(reverse('game.views.login'),
@@ -2564,19 +2634,36 @@ class MatchPlay(TestCase):
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
 
+        # Load notifications page
+        response = self.client.get(reverse('game.views.notifications'), follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "0 notifications")
+        self.assertContains(response, "NEW")
+        self.assertContains(response, "You have been kicked from")
+
+        # Try to kick self
         response = self.client.get(
             reverse('game.views.kick', kwargs={'match_pk': match.pk, 'player_pk': players[1].pk}), follow=True)
         self.assertEqual(match.players.count(), 2)
         self.assertRedirects(response, match.get_absolute_url())
 
+        # Try to kick owner
+        response = self.client.get(
+            reverse('game.views.kick', kwargs={'match_pk': match.pk, 'player_pk': players[0].pk}), follow=True)
+        self.assertEqual(match.players.count(), 2)
+        self.assertRedirects(response, match.get_absolute_url())
+
+
     def test_leave_during_setup(self):
         players = create_test_users()
 
+        # Log in a player 0
         response = self.client.post(reverse('game.views.login'),
                                     data={'username': players[0].user.username, 'password': 'apwd'}, follow=True)
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
 
+        # Create new match
         response = self.client.get(reverse('game.views.new_match'))
         self.assertEqual(response.status_code, 200)
 
@@ -2585,25 +2672,36 @@ class MatchPlay(TestCase):
         match = Match.objects.get(pk=1)
         self.assertTrue(match)
 
+        # Invite player 1
         response = self.client.get(
             reverse('game.views.match_invite', kwargs={'match_pk': match.pk, 'player_pk': players[1].pk}), follow=True)
         self.assertEqual(match.players.count(), 2)
 
+        # Leave match, aborting it (player is owner)
         response = self.client.get(reverse('game.views.leave', kwargs={'match_pk': match.pk}), follow=True)
         self.assertRedirects(response, match.get_absolute_url())
         match = Match.objects.get(pk=1)
         self.assertEqual(match.players.count(), 2)
         self.assertEqual(match.status, Match.STATUS_SETUP_ABORTED)
 
+        # Load notifications page
+        response = self.client.get(reverse('game.views.notifications'), follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "NEW")
+        self.assertContains(response, "has been aborted because the owner")
+
+        # Create match
         response = self.client.post(reverse('game.views.new_match'), data={'name': 'testmatch', 'map': '1'},
                                     follow=True)
         match = Match.objects.get(pk=2)
         self.assertTrue(match)
 
+        # Invite player 1
         response = self.client.get(
             reverse('game.views.match_invite', kwargs={'match_pk': match.pk, 'player_pk': players[1].pk}), follow=True)
         self.assertEqual(match.players.count(), 2)
 
+        # Log out and log in as player 1
         response = self.client.get(reverse('game.views.logout'), follow=True)
 
         response = self.client.post(reverse('game.views.login'),
@@ -2611,11 +2709,33 @@ class MatchPlay(TestCase):
         self.assertRedirects(response, reverse('game.views.start'))
         self.assertIn('_auth_user_id', self.client.session)
 
+        # Load notifications page
+        response = self.client.get(reverse('game.views.notifications'), follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "NEW")
+        self.assertContains(response, "has been aborted because the owner")
+
+        # Leave match
         response = self.client.get(reverse('game.views.leave', kwargs={'match_pk': match.pk}), follow=True)
         match = Match.objects.get(pk=2)
         self.assertEqual(match.players.count(), 1)
         self.assertEqual(match.status, Match.STATUS_SETUP)
         self.assertRedirects(response, reverse('game.views.start'))
+        self.assertContains(response, "0 notifications")
+
+        # Log out and log in as player 0
+        response = self.client.get(reverse('game.views.logout'), follow=True)
+
+        response = self.client.post(reverse('game.views.login'),
+                                    data={'username': players[0], 'password': 'apwd'}, follow=True)
+        self.assertRedirects(response, reverse('game.views.start'))
+        self.assertIn('_auth_user_id', self.client.session)
+
+        # Load notifications page
+        response = self.client.get(reverse('game.views.notifications'), follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "NEW")
+        self.assertContains(response, "%s left from %s" % (players[1].user.username, match.name))
 
     def test_leave_on_first_turn_two_players(self):
         players = create_test_users()
@@ -2695,6 +2815,12 @@ class MatchPlay(TestCase):
         self.assertEqual(PlayerInTurn.objects.get(
             match_player=MatchPlayer.objects.get_by_match_and_player(match, players[1])).total_strength, 40)
 
+        # Load notifications page
+        response = self.client.get(reverse('game.views.notifications'), follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "NEW")
+        self.assertContains(response, "started!")
+
         # Leave game
         response = self.client.get(reverse('game.views.leave', kwargs={'match_pk': match.pk}), follow=True)
         self.assertRedirects(response, match.get_absolute_url())
@@ -2712,6 +2838,24 @@ class MatchPlay(TestCase):
         self.assertFalse(match_player[1].is_active())
         self.assertTrue(BoardToken.objects.filter(owner=match_player[0].latest_player_in_turn()).exists())
         self.assertFalse(BoardToken.objects.filter(owner=match_player[1].latest_player_in_turn()).exists())
+
+        # Logout and login as player 0
+        response = self.client.post(reverse('game.views.logout'), follow=True)
+        self.assertRedirects(response, reverse('game.views.login'))
+        self.assertNotIn('_auth_user_id', self.client.session)
+
+        response = self.client.post(reverse('game.views.login'),
+                                    data={'username': players[0], 'password': 'apwd'}, follow=True)
+        self.assertRedirects(response, reverse('game.views.start'))
+        self.assertIn('_auth_user_id', self.client.session)
+
+        # Load notifications page
+        response = self.client.get(reverse('game.views.notifications'), follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "NEW")
+        self.assertContains(response, "%s left %s" % (players[1].user.username, match.name))
+        self.assertContains(response, "Congratulations")
+        self.assertContains(response, "started!")
 
 
 class MatchListing(TestCase):

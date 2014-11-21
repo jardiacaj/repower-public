@@ -100,3 +100,7 @@ INVITE_MAIL_SENDER_ADDRESS = 'anonymous@localhost'
 COMMANDS_PER_TURN = 5
 
 MAX_BATTLE_ITERATIONS = 30
+
+# TODO: dev vs production settings
+# http://stackoverflow.com/questions/88259/how-do-you-configure-django-for-simple-development-and-deployment/88331
+# http://stackoverflow.com/questions/4664724/distributing-django-projects-with-unique-secret-keys
