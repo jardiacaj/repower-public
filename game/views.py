@@ -1,5 +1,4 @@
 from django.http import HttpResponse
-
 from django.contrib.auth import authenticate, login as django_login
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import AuthenticationForm
@@ -11,10 +10,11 @@ from django.core.urlresolvers import reverse
 from django.shortcuts import render, HttpResponseRedirect, get_object_or_404
 from django.conf import settings
 from django import forms
+from django.views.decorators.vary import vary_on_cookie
 
 from game.models import Match, MatchPlayer, PlayerCannotJoinMatch, MatchIsFull, MatchInWrongStatus, \
     MatchPlayerAlreadyReady, Map, BoardTokenType, TokenConversion, TokenValueConversion, MapCountry, MapRegion, Command, \
-    Turn, PlayerInTurn, Player, Invite, Notification
+    Turn, PlayerInTurnStep, Player, Invite, Notification, TurnStep
 
 
 class InviteForm(forms.Form):
@@ -171,7 +171,7 @@ def start(request):
 
 
 @login_required
-def notifications(request):
+def notifications(request):  # TODO separate new and old notifications
     player = Player.objects.get_by_user(request.user)
     notifications = list(Notification.objects.filter(player=player))
     player.set_all_notifications_read()
@@ -271,20 +271,19 @@ def view_match(request, match_pk):
     }
 
     if match.has_started():
-        turn_number = request.GET.get('turn', match.latest_turn().number)
+        turn_number = request.GET.get('turn', match.get_latest_turn().number)
         try:
             turn = Turn.objects.get(match=match, number=turn_number)
         except Turn.DoesNotExist:
-            turn = match.latest_turn()
+            turn = match.get_latest_turn()
 
         player_in_turn = None if not client_is_in_game else \
-            PlayerInTurn.objects.get(match_player__match=match, match_player__player=player, turn=turn)
-        is_latest_turn = (turn == match.latest_turn())
+            PlayerInTurnStep.objects.get(match_player__match=match, match_player__player=player, turn_step__turn=turn,
+                                         turn_step__step=1)
 
         context = dict(list(context.items()) + list({
                                                         'player_in_turn': player_in_turn,
                                                         'turn': turn,
-                                                        'is_latest_turn': is_latest_turn,
                                                     }.items()))
 
     context['can_add_commands'] = \
@@ -307,17 +306,16 @@ def view_map_in_match(request, match_pk):
         messages.error(request, "You can not see this match because it's private and you are not playing in it")
         return HttpResponseRedirect(reverse('game.views.start'))
 
-    turn_number = request.GET.get('turn', match.latest_turn().number)
-    try:
-        turn = Turn.objects.get(match=match, number=turn_number)
-    except Turn.DoesNotExist:
-        turn = match.latest_turn()
+    turn_number = request.GET.get('turn', match.get_latest_turn().number)
+    step_number = request.GET.get('step', 1)
+    turn_step = get_object_or_404(TurnStep, turn__match=match, turn__number=turn_number, step=step_number)
 
     response = HttpResponse(content_type="image/png")
-    match.map.image_in_match(turn).save(response, "PNG")
+    match.map.image_in_match(turn_step).save(response, "PNG")
     return response
 
 
+@vary_on_cookie  # TODO: not working as intended
 def view_map(request, map_pk):
     show_debug = request.GET.get('show_debug', False)
     show_links = request.GET.get('show_links', False)
@@ -326,6 +324,7 @@ def view_map(request, map_pk):
     return response
 
 
+@vary_on_cookie  # TODO: not working as intended
 def view_token(request, token_type_pk):
     country_pk = request.GET.get('country', None)
     if country_pk is not None:
@@ -419,7 +418,7 @@ def add_command(request, match_pk):
         messages.error(request, "You are not playing in this match")
     elif request.method != 'POST':
         messages.error(request, "Post me a command")
-    elif not match_player.latest_player_in_turn().can_add_commands():
+    elif not match_player.latest_player_in_turn_first_step().can_add_commands():
         messages.error(request, "You can not add more commands this turn")
     else:
 
@@ -430,8 +429,9 @@ def add_command(request, match_pk):
                 region_to = MapRegion.objects.get(id=request.POST.get('move_region_to'))
 
                 command = Command(
-                    player_in_turn=match_player.latest_player_in_turn(),
-                    order=Command.objects.filter(player_in_turn=match_player.latest_player_in_turn()).count(),
+                    player_in_turn=match_player.latest_player_in_turn_first_step(),
+                    order=Command.objects.filter(
+                        player_in_turn=match_player.latest_player_in_turn_first_step()).count(),
                     type=Command.TYPE_MOVEMENT,
                     token_type=token_type,
                     location=region_from,
@@ -452,8 +452,9 @@ def add_command(request, match_pk):
                 token_type = BoardTokenType.objects.get(id=request.POST.get('buy_token_type'))
 
                 command = Command(
-                    player_in_turn=match_player.latest_player_in_turn(),
-                    order=Command.objects.filter(player_in_turn=match_player.latest_player_in_turn()).count(),
+                    player_in_turn=match_player.latest_player_in_turn_first_step(),
+                    order=Command.objects.filter(
+                        player_in_turn=match_player.latest_player_in_turn_first_step()).count(),
                     type=Command.TYPE_PURCHASE,
                     token_type=token_type
                 )
@@ -471,8 +472,9 @@ def add_command(request, match_pk):
                 location = MapRegion.objects.get(id=request.POST.get('convert_region'))
 
                 command = Command(
-                    player_in_turn=match_player.latest_player_in_turn(),
-                    order=Command.objects.filter(player_in_turn=match_player.latest_player_in_turn()).count(),
+                    player_in_turn=match_player.latest_player_in_turn_first_step(),
+                    order=Command.objects.filter(
+                        player_in_turn=match_player.latest_player_in_turn_first_step()).count(),
                     type=Command.TYPE_CONVERSION,
                     conversion=conversion,
                     location=location
@@ -501,13 +503,14 @@ def delete_command(request, match_pk, order):
 
     if match_player is None:
         messages.error(request, "You are not playing in this match")
-    elif not match_player.latest_player_in_turn().can_add_commands():
+    elif not match_player.latest_player_in_turn_first_step().can_add_commands():
         messages.error(request, "You can not delete commands this turn")
     else:
         try:
-            command = Command.objects.get(player_in_turn=match_player.latest_player_in_turn, order=order)
+            command = Command.objects.get(player_in_turn=match_player.latest_player_in_turn_first_step, order=order)
             command.delete()
-            next_commands = Command.objects.filter(player_in_turn=match_player.latest_player_in_turn, order__gt=order)
+            next_commands = Command.objects.filter(player_in_turn=match_player.latest_player_in_turn_first_step,
+                                                   order__gt=order)
             for command in next_commands:
                 command.order -= 1
                 command.save()

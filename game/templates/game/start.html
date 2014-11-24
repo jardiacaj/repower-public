@@ -5,17 +5,19 @@
 {% block content %}
     <h1>Welcome {{ user.username }}</h1>
 
-    <h3>Your current matches:</h3>
+    {% if match_players %}
+        <h3>Your current matches:</h3>
 
-    <ul>
-        {% for match_player in match_players %}
-            <li>
-                {{ match_player.status_box }}
-                <a href="{{ match_player.match.get_absolute_url }}">{{ match_player.match.name }}</a>
-                ({{ match_player.match.get_status_display }})
-            </li>
-        {% endfor %}
-    </ul>
+        <ul>
+            {% for match_player in match_players %}
+                <li>
+                    {{ match_player.status_box }}
+                    <a href="{{ match_player.match.get_absolute_url }}">{{ match_player.match.name }}</a>
+                    ({{ match_player.match.get_status_display }})
+                </li>
+            {% endfor %}
+        </ul>
+    {% endif %}
 
     <p>
         <a href="{% url 'game.views.new_match' %}">Set up new match</a><br>

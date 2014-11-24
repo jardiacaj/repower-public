@@ -17,8 +17,6 @@ $(function () {
                 break;
             }
         }
-        ;
-        map_click_callback = null;
     });
 });
 

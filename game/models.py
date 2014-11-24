@@ -4,7 +4,7 @@ import random
 import string
 
 from django.core.exceptions import ValidationError
-from django.db.models import Sum
+from django.db.models import Sum, Q
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.urlresolvers import reverse
@@ -93,7 +93,7 @@ class Invite(models.Model):
 
     email = models.EmailField(unique=True, db_index=True)
     valid = models.BooleanField(default=True, db_index=True)
-    code = models.CharField(max_length=20, db_index=True)
+    code = models.CharField(max_length=20, unique=True, db_index=True)
     invitor = models.ForeignKey(Player, db_index=True)
 
     def create_player(self, username, password):
@@ -160,10 +160,10 @@ class Map(models.Model):
                    destination.countries_with_this_headquarter.first() == source.countries_with_this_reserve.first()
         return check_path(token, source, destination, token.type.movements, False)
 
-    def image_in_match(self, turn):  # TODO: fix transparency
+    def image_in_match(self, turn_step):  # TODO: fix transparency
         map_image = self.image(False, False)
         tokens_per_region = defaultdict(lambda: 0)
-        for token in BoardToken.objects.filter(owner__turn=turn):
+        for token in BoardToken.objects.filter(owner__turn_step=turn_step):
             if not token.position.render_on_map:
                 continue
             token_image = token.image()
@@ -218,6 +218,7 @@ class Map(models.Model):
 
 class MapCountry(models.Model):
     class Meta:
+        unique_together = (("map", "name"),)
         verbose_name_plural = "Map countries"
 
     map = models.ForeignKey(Map, related_name='countries')
@@ -232,6 +233,10 @@ class MapCountry(models.Model):
 
 
 class MapRegion(models.Model):
+    class Meta:
+        unique_together = (("map", "name"),
+                           ("map", "short_name"))
+
     map = models.ForeignKey(Map, related_name='regions')
     country = models.ForeignKey(MapCountry, blank=True, null=True)
     name = models.CharField(max_length=30)
@@ -252,6 +257,9 @@ class MapRegion(models.Model):
 
 
 class MapRegionLink(models.Model):
+    class Meta:
+        unique_together = (("source", "destination"),)
+
     source = models.ForeignKey(MapRegion, related_name='links_source')
     destination = models.ForeignKey(MapRegion, related_name='links_destination')
     unidirectional = models.BooleanField(default=False)
@@ -269,23 +277,103 @@ class MapRegionLink(models.Model):
 
 class Turn(models.Model):
     class Meta:
-        unique_together = (("match", "number", "step"),)
+        unique_together = (("match", "number"),)
 
     match = models.ForeignKey('Match')
-    number = models.PositiveIntegerField(db_index=True)
-    step = models.PositiveSmallIntegerField(default=0, db_index=True)
+    number = models.PositiveIntegerField(db_index=True, default=1)
     start = models.DateTimeField(auto_now_add=True)
     end = models.DateTimeField(blank=True, null=True)  # TODO Use this
-    report = models.TextField(default='')
-
-    def players(self):
-        return PlayerInTurn.objects.filter(turn=self)
 
     def is_latest(self):
-        return not self.objects.filter(match=self.match, number__gt=self.number).exists()
+        return not Turn.objects.filter(match=self.match, number__gt=self.number).exists()
+
+    def get_latest_step(self):
+        return self.steps.order_by("-step").first()
+
+    def get_first_step(self):
+        return self.steps.get(step=1)
+
+    def create_next(self):
+        next_turn = Turn.objects.create(match=self.match, number=self.number + 1)
+        self.clone_to_new_turn(next_turn)
+        return next_turn
+
+    def clone_to_new_turn(self, new_turn):
+        new_step = TurnStep.objects.create(turn=new_turn)
+
+        # Clone players
+        for player in PlayerInTurnStep.objects.filter(turn_step=self.get_latest_step()):
+            player.pk = None
+            player.turn_step = new_step
+            player.ready = False
+            player.save(force_insert=True)
+
+        # Clone tokens
+        for token in BoardToken.objects.filter(
+                owner__in=PlayerInTurnStep.objects.filter(turn_step=self.get_latest_step())):
+            token.pk = None
+            token.moved_this_turn = False
+            token.can_move_this_turn = True
+            token.retreat_from_draw = False
+            token.owner = PlayerInTurnStep.objects.get(match_player=token.owner.match_player, turn_step=new_step)
+            token.save(force_insert=True)
+
+        return new_turn
+
+    def get_absolute_url(self):
+        return "%s?turn=%d" % (reverse('game.views.view_match', kwargs={'match_pk': self.pk}), self.number)
 
     def __str__(self):
-        return "%d.%d in %s" % (self.number, self.step, self.match.name)
+        return "%d in %s" % (self.number, self.match.name)
+
+
+class TurnStep(models.Model):
+    class Meta:
+        unique_together = (("turn", "step"),)
+
+    def is_latest(self):
+        return not TurnStep.objects.filter(turn=self.turn, step__gt=self.step).exists()
+
+    def append_report(self, content):
+        if len(self.report) != 0:
+            self.report += '<br>'
+        self.report += content
+        self.save()
+
+    def create_next(self):
+        next_step = TurnStep.objects.create(turn=self.turn, step=self.step + 1)
+        self.clone_to_new_step(next_step)
+        return next_step
+
+    def clone_to_new_step(self, new_step):
+
+        # Clone players
+        for player in PlayerInTurnStep.objects.filter(turn_step=self):
+            player.pk = None
+            player.turn_step = new_step
+            player.save(force_insert=True)
+
+        # Clone tokens
+        for token in BoardToken.objects.filter(owner__in=PlayerInTurnStep.objects.filter(turn_step=self)):
+            token.pk = None
+            token.owner = PlayerInTurnStep.objects.get(match_player=token.owner.match_player, turn_step=new_step)
+            token.save(force_insert=True)
+
+        return new_step
+
+    turn = models.ForeignKey(Turn, related_name='steps')
+    step = models.PositiveSmallIntegerField(default=1, db_index=True)
+    report = models.TextField(default='')
+
+    def get_absolute_url(self):
+        return "%s?turn=%d&step=%d" % (
+            reverse('game.views.view_map_in_match', kwargs={'match_pk': self.turn.match_id}),
+            self.turn.number,
+            self.step
+        )
+
+    def __str__(self):
+        return "Step %s in %s" % (self.step, self.turn)
 
 
 class BoardTokenType(models.Model):
@@ -339,11 +427,20 @@ class TokenValueConversion(models.Model):
     produces = models.ForeignKey(BoardTokenType, related_name="value_conversions_producing")
 
 
-class PlayerInTurn(models.Model):
+class PlayerInTurnStepManager(models.Manager):
+    def get_in_last_step(self, match_player, turn_number):
+        return self.filter(match_player=match_player, turn_step__turn__number=turn_number).order_by(
+            "-turn_step__step").first()
+
+
+class PlayerInTurnStep(models.Model):
     class Meta:
+        unique_together = (("match_player", "turn_step"),)
         verbose_name_plural = "Players in turn"
 
-    turn = models.ForeignKey(Turn)
+    objects = PlayerInTurnStepManager()
+
+    turn_step = models.ForeignKey(TurnStep, related_name='players')
     match_player = models.ForeignKey('MatchPlayer', related_name='+')
     power_points = models.PositiveSmallIntegerField()
     defeated = models.BooleanField(default=False)
@@ -359,7 +456,7 @@ class PlayerInTurn(models.Model):
         return self.match_player.is_active()
 
     def can_add_commands(self):
-        if not self.is_latest():
+        if not self.is_latest_turn():
             return False
         elif not self.is_active():
             return False
@@ -376,7 +473,7 @@ class PlayerInTurn(models.Model):
         self.match_player.save()
 
     def check_and_process_defeat(self):
-        defeater_token = BoardToken.objects.filter(owner__turn=self.turn,
+        defeater_token = BoardToken.objects.filter(owner__turn_step=self.turn_step,
                                                    type__can_capture_flag=True,
                                                    position=self.match_player.country.headquarters) \
             .exclude(owner=self).first()
@@ -388,9 +485,13 @@ class PlayerInTurn(models.Model):
             self.set_defeated()
             captured_tokens = BoardToken.objects.filter(owner=self)
             captured_tokens.update(owner=defeater, position=defeater.match_player.country.reserve)
+            self.turn_step.append_report("%s captured %s's flag." % (
+                defeater.match_player.player.user.username, self.match_player.player.user.username))
         else:
             if not BoardToken.objects.filter(owner=self).exists() and self.power_points == 0:
                 self.set_defeated()
+                self.turn_step.append_report("%s lost all tokens and power points and is defeated." %
+                                             self.match_player.player.user.username)
 
     def collect_power_points(self):
         countries = list()
@@ -398,7 +499,11 @@ class PlayerInTurn(models.Model):
                 position__country=self.match_player.country):
             if token.position.country is not None and token.position.country not in countries:
                 countries.append(token.position.country)
-        self.power_points += len(countries)
+        collected_power_ponts = len(countries)
+        self.power_points += collected_power_ponts
+        if collected_power_ponts > 0:
+            self.turn_step.append_report("%s collects %d power points" % (self.match_player.player.user.username,
+                                                                          collected_power_ponts))
         self.save()
 
     def tokens_in_reserve(self):
@@ -417,9 +522,16 @@ class PlayerInTurn(models.Model):
         self.save()
         self.match_player.match.check_all_players_ready()
 
-    def is_latest(self):
-        return not PlayerInTurn.objects.filter(match_player=self.match_player,
-                                               turn__number__gt=self.turn.number).exists()
+    def is_latest_turn(self):
+        return not PlayerInTurnStep.objects.filter(match_player=self.match_player,
+                                                   turn_step__turn__number__gt=self.turn_step.turn.number).exists()
+
+    def is_latest_turn_step(self):
+        return not PlayerInTurnStep.objects \
+            .filter(match_player=self.match_player) \
+            .filter(Q(turn_step__turn__number__gt=self.turn_step.turn.number) |
+                    (Q(turn_step__turn__number=self.turn_step.turn.number) &
+                     Q(turn_step__step__gt=self.turn_step.step))).exists()
 
     def leave(self):
         if not self.match_player.is_active() or not self.match_player.match.is_in_progress() or self.left_match or self.defeated:
@@ -445,11 +557,11 @@ class PlayerInTurn(models.Model):
 
     def __str__(self):
         return "%s in %s (turn %d)" % (
-            self.match_player.player.user.username, self.match_player.match.name, self.turn.number)
+            self.match_player.player.user.username, self.match_player.match.name, self.turn_step.number)
 
 
 class BoardToken(models.Model):
-    owner = models.ForeignKey(PlayerInTurn, related_name='tokens')
+    owner = models.ForeignKey(PlayerInTurnStep, related_name='tokens')
     position = models.ForeignKey(MapRegion)
     type = models.ForeignKey(BoardTokenType)
     moved_this_turn = models.BooleanField(default=False)
@@ -463,7 +575,138 @@ class BoardToken(models.Model):
         return "%s in %s from %s" % (self.type.name, self.position.name, self.owner)
 
 
+class BattleManager(models.Manager):
+    def process_battles(self, incoming_turn_step):
+        iterations = 0
+        while True:
+            battle_exists = False
+            # TODO optimize and remove repetition
+            for region in incoming_turn_step.turn.match.map.regions.all():
+                tokens_in_region = BoardToken.objects.filter(owner__turn_step=incoming_turn_step, position=region)
+                if tokens_in_region.count() > 1:
+                    # Sort tokens per owner
+                    tokens_per_player = defaultdict(list)
+                    for token in tokens_in_region:
+                        tokens_per_player[token.owner_id].append(token)
+                    if len(tokens_per_player) > 1:
+                        battle_exists = True
+                        break
+
+            if battle_exists:
+                # Create new turn step
+                outgoing_turn_step = incoming_turn_step
+                incoming_turn_step = incoming_turn_step.create_next()
+            else:
+                break
+
+            for region in incoming_turn_step.turn.match.map.regions.all():
+                tokens_in_region = BoardToken.objects.filter(owner__turn_step=incoming_turn_step, position=region)
+                if tokens_in_region.count() > 1:
+                    # Sort tokens per owner
+                    tokens_per_player = defaultdict(list)
+                    for token in tokens_in_region:
+                        tokens_per_player[token.owner_id].append(token)
+                    if len(tokens_per_player) > 1:
+                        # There is a battle
+                        battle = self.create(location=region, turn_step=outgoing_turn_step)
+                        # TODO If infinite strength token present, it wins. If missile, it kills every token (no capture)
+                        # TODO: missiles do not capture!
+
+                        # No infinite strength tokens, sort players by force
+                        players_by_force = defaultdict(list)
+                        for player_in_battle, tokens in tokens_per_player.items():
+                            # Add up force, missiles only count if fired this turn
+                            players_by_force[
+                                sum(token.type.strength for token in tokens
+                                    if not token.type.special_missile or
+                                    (token.type.special_missile and token.move_this_turn))
+                            ].append(player_in_battle)
+
+                        winners = PlayerInTurnStep.objects.filter(id__in=players_by_force[max(players_by_force.keys())])
+
+                        if len(winners) == 1:
+                            # Single winner case, capture tokens
+                            # TODO: missiles do not capture!
+                            winner = winners[0]
+                            battle.winner = winner
+                            battle.save()
+                            for token in tokens_in_region:
+                                if token.owner == winner:
+                                    battle.winning_tokens.add(token)
+                                else:
+                                    battle.captured_tokens.add(token)
+                                    token.owner = winner
+                                    token.position = winner.match_player.country.reserve
+                                    token.save()
+                        elif len(winners) > 1:
+                            # Draw: retreat winner forces
+                            for token in tokens_in_region:
+                                battle.winning_tokens.add(token)
+                                if token.owner in winners and not token.retreat_from_draw:
+                                    revertable_command = Command.objects.filter(
+                                        player_in_turn__match_player=token.owner.match_player,
+                                        player_in_turn__turn_step=incoming_turn_step.turn.steps.get(step=1),
+                                        valid=True,
+                                        reverted_in_draw=False,
+                                        type=Command.TYPE_MOVEMENT,
+                                        move_destination=token.position,
+                                        token_type=token.type
+                                    ).first()
+                                    if revertable_command is not None:
+                                        revertable_command.reverted_in_draw = True
+                                        revertable_command.save()
+                                        token.position = revertable_command.location
+                                        token.retreat_from_draw = True
+                                        token.save()
+
+            # Delete shot missiles and steal power points from shot infinite strength missiles
+            for missile in BoardToken.objects.filter(owner__turn_step=incoming_turn_step,
+                                                     type__special_missile=True,
+                                                     moved_this_turn=True):
+                reserve_of = missile.location.countries_with_this_reserve.first()
+                if missile.special_destroys_all and reserve_of:
+                    steal_from = PlayerInTurnStep.objects.filter(turn=incoming_turn_step,
+                                                                 match_player__country=reserve_of)
+                    missile.owner.power_points += steal_from.power_points
+                    missile.owner.save()
+                    steal_from.power_points = 0
+                    steal_from.save()
+                missile.delete()
+
+            iterations += 1
+            if iterations >= settings.MAX_BATTLE_ITERATIONS:
+                assert False
+
+
+class Battle(models.Model):
+    class Meta:
+        unique_together = (("turn_step", "location"),)
+
+    objects = BattleManager()
+
+    location = models.ForeignKey(MapRegion, related_name='battles')
+    turn_step = models.ForeignKey(TurnStep, related_name='battles')
+    winner = models.ForeignKey(PlayerInTurnStep, related_name='battles', blank=True, null=True)
+    winning_tokens = models.ManyToManyField(BoardToken, related_name='winning_in')
+    captured_tokens = models.ManyToManyField(BoardToken, related_name='captured_in')
+
+    def in_game_str(self):
+        result = "Battle in %s" % self.location.name
+        if self.winner is None:
+            result += " results in draw"
+        else:
+            result += " is won by %s," % self.winner.match_player.player.user.username
+            result += " capturing %d tokens" % self.captured_tokens.count()
+        return result
+
+    def __str__(self):
+        return "Battle turn %s in %s" % (self.turn, self.location)
+
+
 class Command(models.Model):
+    class Meta:
+        unique_together = (("player_in_turn", "order"),)
+
     class InvalidLocation(Exception):
         pass
 
@@ -484,7 +727,8 @@ class Command(models.Model):
         (TYPE_PURCHASE, 'Token purchase')
     )
 
-    player_in_turn = models.ForeignKey(PlayerInTurn, related_name='commands')
+    player_in_turn = models.ForeignKey(PlayerInTurnStep,
+                                       related_name='commands')  # TODO: change to turn + matchplayer FKs
     order = models.PositiveSmallIntegerField(db_index=True)
     type = models.CharField(max_length=3, choices=TYPES)
     location = models.ForeignKey(MapRegion, null=True, blank=True, related_name='+')
@@ -512,9 +756,9 @@ class Command(models.Model):
             raise Command.InvalidCommandType()
         return True
 
-    def is_valid(self, incoming_turn, incoming_player_in_turn):
+    def is_valid(self, incoming_turn_step, incoming_player_in_turn):
         if self.type == Command.TYPE_MOVEMENT:
-            token = BoardToken.objects.filter(owner__turn=incoming_turn,
+            token = BoardToken.objects.filter(owner__turn_step=incoming_turn_step,
                                               type=self.token_type,
                                               position=self.location).first()
             if token is None or not token.can_move_this_turn:
@@ -547,11 +791,11 @@ class Command(models.Model):
         else:
             raise Command.InvalidCommandType()
 
-    def execute(self, incoming_turn, incoming_player_in_turn):
+    def execute(self, incoming_turn_step, incoming_player_in_turn):
         assert self.valid
 
         if self.type == Command.TYPE_MOVEMENT:
-            token = BoardToken.objects.filter(owner__turn=incoming_turn,
+            token = BoardToken.objects.filter(owner__turn_step=incoming_turn_step,
                                               type=self.token_type,
                                               position=self.location).first()
             token.position = self.move_destination
@@ -650,7 +894,7 @@ class Match(models.Model):
     def has_started(self):
         return self.status in (Match.STATUS_FINISHED, Match.STATUS_ABORTED, Match.STATUS_PAUSED, Match.STATUS_PLAYING)
 
-    def latest_turn(self):
+    def get_latest_turn(self):
         return Turn.objects.filter(match=self).order_by('-number').first()
 
     def can_view_match(self, player):
@@ -676,7 +920,7 @@ class Match(models.Model):
                         all_ready = False
             if self.is_in_progress():
                 for player in self.players.all():
-                    if not player.latest_player_in_turn().ready and player.is_active():
+                    if not player.latest_player_in_turn_last_step().ready and player.is_active():
                         all_ready = False
             if all_ready:
                 self.all_players_ready()
@@ -697,8 +941,8 @@ class Match(models.Model):
 
     def transition_from_setup_to_playing(self):
         # Create first turn
-        turn = Turn.objects.create(match=self, number=1)
-        turn.save()
+        turn = Turn.objects.create(match=self)
+        turn_step = TurnStep.objects.create(turn=turn)
 
         # Assign countries to players and assign starting tokens
         countries = list(self.map.countries.all())
@@ -710,7 +954,7 @@ class Match(models.Model):
 
             player.player.add_notification("Match %s started!" % self.name, self.get_absolute_url())
 
-            player_in_turn = PlayerInTurn(turn=turn, match_player=player, power_points=0)
+            player_in_turn = PlayerInTurnStep(turn_step=turn_step, match_player=player, power_points=0)
             player_in_turn.save()
 
             starting_tokens = (
@@ -729,75 +973,18 @@ class Match(models.Model):
         self.status = self.STATUS_PLAYING
         self.save()
 
-    def process_battles(self, outgoing_turn, incoming_turn):
-        iterations = 0
-        while True:
-            token_retreated = False
-            for region in self.map.regions.all():
-                tokens_in_region = BoardToken.objects.filter(owner__turn=incoming_turn, position=region)
-                if tokens_in_region.count() > 1:
-                    # Sort tokens per owner
-                    tokens_per_player = defaultdict(list)
-                    for token in tokens_in_region:
-                        tokens_per_player[token.owner_id].append(token)
-                    if len(tokens_per_player) > 1:
-                        # There is a battle
-                        # TODO If infinite strength token present, it wins. If missile, it kills every token (no capture)
-                        # TODO: missiles do not capture!
-
-                        # No infinite strength tokens, sort players by force
-                        players_by_force = defaultdict(list)
-                        for player_in_battle, tokens in tokens_per_player.items():
-                            # Add up force, missiles only count if fired this turn
-                            players_by_force[
-                                sum(token.type.strength for token in tokens
-                                    if not token.type.special_missile or
-                                    (token.type.special_missile and token.move_this_turn))
-                            ].append(player_in_battle)
-
-                        winners = PlayerInTurn.objects.filter(id__in=players_by_force[max(players_by_force.keys())])
-
-                        if len(winners) == 1:
-                            # Single winner case, capture tokens
-                            # TODO: missiles do not capture!
-                            winner = winners[0]
-                            for token in tokens_in_region:
-                                if token.owner != winner:
-                                    token.owner = winner
-                                    token.position = winner.match_player.country.reserve
-                                    token.save()
-                        elif len(winners) > 1:
-                            # Draw: retreat winner forces
-                            for token in tokens_in_region:
-                                if token.owner in winners and not token.retreat_from_draw:
-                                    revertable_command = Command.objects.filter(
-                                        player_in_turn__match_player=token.owner.match_player,
-                                        player_in_turn__turn=outgoing_turn,
-                                        valid=True,
-                                        reverted_in_draw=False,
-                                        type=Command.TYPE_MOVEMENT,
-                                        move_destination=token.position,
-                                        token_type=token.type
-                                    ).first()
-                                    if revertable_command is not None:
-                                        revertable_command.reverted_in_draw = True
-                                        revertable_command.save()
-                                        token.position = revertable_command.location
-                                        token.retreat_from_draw = True
-                                        token.save()
-                                        token_retreated = True
-            if not token_retreated:
-                break
-            iterations += 1
-            if iterations >= settings.MAX_BATTLE_ITERATIONS:
-                assert False
-
     def check_and_process_end_of_game(self):
         remaining_players = [match_player
                              for match_player
                              in self.players.all()
                              if match_player.is_active()]
         if len(remaining_players) <= 1:
+            if len(remaining_players) == 1:
+                self.get_latest_turn().get_latest_step().append_report("%s wins the match!" %
+                                                                       remaining_players[0].player.user.username)
+            else:
+                self.get_latest_turn().get_latest_step().append_report("The match ends in a draw!" %
+                                                                       remaining_players[0].player.user.username)
             self.status = self.STATUS_FINISHED
             for match_player in self.players.all():
                 if match_player in remaining_players:
@@ -813,80 +1000,59 @@ class Match(models.Model):
         self.save()
 
     def process_turn(self):
-        # Create new turn
-        outgoing_turn = self.latest_turn()
-        incoming_turn = Turn.objects.create(match=self, number=outgoing_turn.number + 1)
-        incoming_turn.save()
-
-        # Clone players
-        for player in PlayerInTurn.objects.filter(turn=outgoing_turn):
-            player.pk = None
-            player.turn = incoming_turn
-            player.ready = False
-            player.save(force_insert=True)
-
-        # Clone tokens
-        for token in BoardToken.objects.filter(owner__in=PlayerInTurn.objects.filter(turn=outgoing_turn)):
-            token.pk = None
-            token.moved_this_turn = False
-            token.can_move_this_turn = True
-            token.retreat_from_draw = False
-            token.owner = PlayerInTurn.objects.get(match_player=token.owner.match_player, turn=incoming_turn)
-            token.save(force_insert=True)
+        # Create new turn step
+        outgoing_turn = self.get_latest_turn()
+        outgoing_turn_step = outgoing_turn.get_latest_step()
+        incoming_turn_step = outgoing_turn_step.create_next()
 
         # Process commands
-        for outgoing_player_in_turn in PlayerInTurn.objects.filter(turn=outgoing_turn):
-            incoming_player_in_turn = PlayerInTurn.objects.get(turn=incoming_turn,
+        for outgoing_player_in_turn in PlayerInTurnStep.objects.filter(turn_step=outgoing_turn_step):
+            incoming_player_in_turn = PlayerInTurnStep.objects.get(turn_step=incoming_turn_step,
                                                                match_player=outgoing_player_in_turn.match_player)
 
             valid_command = False
             for command in outgoing_player_in_turn.commands.all().order_by('order'):
-                command.valid = command.is_valid(incoming_turn, incoming_player_in_turn)
+                command.valid = command.is_valid(incoming_turn_step, incoming_player_in_turn)
                 if command.valid:
                     valid_command = True
-                    command.execute(incoming_turn, incoming_player_in_turn)
+                    command.execute(incoming_turn_step, incoming_player_in_turn)
                 command.save()
 
-            # if no valid movements, substract power point
+            # if no valid movements, subtract power point
             if not valid_command and incoming_player_in_turn.power_points > 0:
+                outgoing_turn_step.append_report("%s had no valid commands, loses one power point" %
+                                                 incoming_player_in_turn.match_player.player.user.username)
                 incoming_player_in_turn.power_points -= 1
                 incoming_player_in_turn.save()
 
         # Process battles
-        self.process_battles(outgoing_turn, incoming_turn)
+        Battle.objects.process_battles(incoming_turn_step)
 
-        # Delete shot missiles and steal power points from shot infinite strength missiles
-        for missile in BoardToken.objects.filter(owner__turn=incoming_turn,
-                                                 type__special_missile=True,
-                                                 moved_this_turn=True):
-            reserve_of = missile.location.countries_with_this_reserve.first()
-            if missile.special_destroys_all and reserve_of:
-                steal_from = PlayerInTurn.objects.filter(turn=incoming_turn, match_player__country=reserve_of)
-                missile.owner.power_points += steal_from.power_points
-                missile.owner.save()
-                steal_from.power_points = 0
-                steal_from.save()
-            missile.delete()
+        # Get latest turn step
+        incoming_turn_step = outgoing_turn.get_latest_step()
 
         # Flag capture & defeats
         for match_player in (match_player for match_player in self.players.all() if not match_player.defeated):
-            match_player.latest_player_in_turn().check_and_process_defeat()
+            match_player.latest_player_in_turn_last_step().check_and_process_defeat()
 
         # Check end of game
         self.check_and_process_end_of_game()
 
         if self.is_in_progress():
             # Collect power points
-            for player_in_turn in PlayerInTurn.objects.filter(turn=incoming_turn):
+            for player_in_turn in PlayerInTurnStep.objects.filter(turn_step=incoming_turn_step):
                 player_in_turn.collect_power_points()
 
             # Send notifications
-            for player_in_turn in PlayerInTurn.objects.filter(turn=incoming_turn):
+            for player_in_turn in PlayerInTurnStep.objects.filter(turn_step=incoming_turn_step):
                 if player_in_turn.is_active():
                     player_in_turn.match_player.player.add_notification(
-                        "New turn (%d) for match %s" % (incoming_turn.number, self.name),
-                        self.get_absolute_url()
+                        "Turn passed (%d) for match %s." % (outgoing_turn.number, self.name),
+                        "%s?turn=%d" % (self.get_absolute_url(), outgoing_turn.number)
                     )
+
+        # Create next turn
+        outgoing_turn.create_next()
 
     def get_absolute_url(self):
         return reverse('game.views.view_match', kwargs={'match_pk': self.pk})
@@ -908,6 +1074,9 @@ class MatchPlayerManager(models.Manager):
 
 
 class MatchPlayer(models.Model):
+    class Meta:
+        unique_together = (("match", "player"),)
+
     objects = MatchPlayerManager()
 
     match = models.ForeignKey(Match, related_name='players')
@@ -918,8 +1087,13 @@ class MatchPlayer(models.Model):
     left_match = models.BooleanField(default=False)
     defeated = models.BooleanField(default=False)
 
-    def latest_player_in_turn(self):
-        return PlayerInTurn.objects.filter(match_player=self).order_by('-turn_id').first()
+    def latest_player_in_turn_first_step(self):
+        return PlayerInTurnStep.objects.filter(match_player=self, turn_step__step=1).order_by(
+            '-turn_step__turn__number').first()
+
+    def latest_player_in_turn_last_step(self):
+        return PlayerInTurnStep.objects.filter(match_player=self).order_by('-turn_step__turn__number',
+                                                                           '-turn_step__step').first()
 
     def is_active(self):
         return not self.defeated and not self.left_match
@@ -937,7 +1111,7 @@ class MatchPlayer(models.Model):
 
     def leave(self):
         if self.match.is_in_progress():
-            self.latest_player_in_turn().leave()
+            self.latest_player_in_turn_last_step().leave()
         elif self.match.status == Match.STATUS_SETUP:
             if self.match.owner.pk == self.pk:
                 self.match.status = Match.STATUS_SETUP_ABORTED
@@ -968,7 +1142,7 @@ class MatchPlayer(models.Model):
             self.save()
             self.match.check_all_players_ready()
         elif self.match.is_in_progress():
-            self.latest_player_in_turn().make_ready()
+            self.latest_player_in_turn_last_step().make_ready()
         else:
             raise MatchInWrongStatus()
 
@@ -979,7 +1153,7 @@ class MatchPlayer(models.Model):
         elif self.match.status == Match.STATUS_SETUP:
             return "☑" if self.setup_ready else "☐"
         elif self.match.is_in_progress():
-            return self.latest_player_in_turn().status_box()
+            return self.latest_player_in_turn_last_step().status_box()
         assert False
 
     def __str__(self):

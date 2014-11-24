@@ -19,7 +19,7 @@ ADMINS = (('Joan', 'joan.ardiaca@gmail.com'), )
 # Application definition
 
 TEMPLATE_CONTEXT_PROCESSORS = global_settings.TEMPLATE_CONTEXT_PROCESSORS + (
-"game.context_processors.player_processor", )
+    "game.context_processors.player_processor", )
 
 INSTALLED_APPS = (
     'django.contrib.admin',

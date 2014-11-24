@@ -11,6 +11,8 @@
                 <a href="{{ match.get_absolute_url }}">{{ match.name }}</a>
                 ({{ match.get_status_display }})
             </li>
+        {% empty %}
+            <p>No matches match the selected criteria</p>
         {% endfor %}
     </ul>
 {% endblock %}

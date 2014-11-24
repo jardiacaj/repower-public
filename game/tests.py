@@ -6,9 +6,12 @@ from django.core import mail
 from django.test import TestCase
 from django.core.urlresolvers import reverse
 
-from game.models import Match, MatchPlayer, Turn, PlayerInTurn, BoardToken, Command, BoardTokenType, MapRegion, Player, \
-    Invite
+from game.models import Match, MatchPlayer, Turn, PlayerInTurnStep, BoardToken, Command, BoardTokenType, MapRegion, \
+    Player, \
+    Invite, Battle
 
+
+# TODO bug: movement from So9 to No7 & So7 to No7 fails
 
 def create_test_users():
     user = User.objects.create_user('Alice', 'alicemail@localhost', 'apwd')
@@ -775,15 +778,35 @@ class MatchPlay(TestCase):
         self.assertEqual(MatchPlayer.objects.get_by_match_and_player(match, players[0]).country, countries[0])
         self.assertEqual(MatchPlayer.objects.get_by_match_and_player(match, players[1]).country, countries[1])
         turn = Turn.objects.get(match=match, number=1)
-        self.assertEqual(len(PlayerInTurn.objects.filter(match_player__match=match)), 2)
+        self.assertEqual(len(PlayerInTurnStep.objects.filter(match_player__match=match)), 2)
         self.assertEqual(len(BoardToken.objects.filter(
             owner__match_player=MatchPlayer.objects.get_by_match_and_player(match, players[0]))), 8)
         self.assertEqual(len(BoardToken.objects.filter(
             owner__match_player=MatchPlayer.objects.get_by_match_and_player(match, players[1]))), 8)
-        self.assertEqual(PlayerInTurn.objects.get(
+        self.assertEqual(PlayerInTurnStep.objects.get(
             match_player=MatchPlayer.objects.get_by_match_and_player(match, players[0])).total_strength, 40)
-        self.assertEqual(PlayerInTurn.objects.get(
+        self.assertEqual(PlayerInTurnStep.objects.get(
             match_player=MatchPlayer.objects.get_by_match_and_player(match, players[1])).total_strength, 40)
+
+        # Load match map
+        response = self.client.get(reverse('game.views.view_map_in_match', kwargs={'match_pk': match.pk}),
+                                   data={'turn': 1},
+                                   follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], "image/png")
+
+        # Load match map
+        response = self.client.get(reverse('game.views.view_map_in_match', kwargs={'match_pk': match.pk}),
+                                   data={'turn': 1, 'step': 1},
+                                   follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], "image/png")
+
+        # Load match map
+        response = self.client.get(reverse('game.views.view_map_in_match', kwargs={'match_pk': match.pk}),
+                                   data={'turn': 1, 'step': 2},
+                                   follow=True)
+        self.assertEqual(response.status_code, 404)
 
         # Try to add invalid commands
         self.assertEqual(Command.objects.all().count(), 0)
@@ -998,7 +1021,8 @@ class MatchPlay(TestCase):
         self.assertEqual(command.location, MapRegion.objects.get(name="South Reserve"))
         self.assertEqual(command.move_destination, MapRegion.objects.get(name="South HQ"))
         self.assertEqual(command.player_in_turn,
-                         MatchPlayer.objects.get_by_match_and_player(match, players[1]).latest_player_in_turn())
+                         MatchPlayer.objects.get_by_match_and_player(match,
+                                                                     players[1]).latest_player_in_turn_first_step())
         self.assertEqual(command.token_type, BoardTokenType.objects.get(name="Small Tank"))
         self.assertIsNone(command.value_conversion)
 
@@ -1047,8 +1071,10 @@ class MatchPlay(TestCase):
         # Make ready
         response = self.client.get(reverse('game.views.ready', kwargs={'match_pk': match.pk}), follow=True)
         self.assertRedirects(response, match.get_absolute_url())
-        self.assertTrue(MatchPlayer.objects.get_by_match_and_player(match, players[1]).latest_player_in_turn().ready)
-        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[0]).latest_player_in_turn().ready)
+        self.assertTrue(
+            MatchPlayer.objects.get_by_match_and_player(match, players[1]).latest_player_in_turn_last_step().ready)
+        self.assertFalse(
+            MatchPlayer.objects.get_by_match_and_player(match, players[0]).latest_player_in_turn_last_step().ready)
 
         # Logout and login as player 0
         response = self.client.post(reverse('game.views.logout'), follow=True)
@@ -1117,23 +1143,15 @@ class MatchPlay(TestCase):
 
         players_in_turn = dict()
         players_in_turn[1] = dict()
-        players_in_turn[1][0] = PlayerInTurn.objects.get(
-            match_player=MatchPlayer.objects.get_by_match_and_player(match, players[0]),
-            turn__number=1
-        )
-        players_in_turn[1][1] = PlayerInTurn.objects.get(
-            match_player=MatchPlayer.objects.get_by_match_and_player(match, players[1]),
-            turn__number=1
-        )
+        players_in_turn[1][0] = PlayerInTurnStep.objects.get_in_last_step(
+            MatchPlayer.objects.get_by_match_and_player(match, players[0]), 1)
+        players_in_turn[1][1] = PlayerInTurnStep.objects.get_in_last_step(
+            MatchPlayer.objects.get_by_match_and_player(match, players[1]), 1)
         players_in_turn[2] = dict()
-        players_in_turn[2][0] = PlayerInTurn.objects.get(
-            match_player=MatchPlayer.objects.get_by_match_and_player(match, players[0]),
-            turn__number=2
-        )
-        players_in_turn[2][1] = PlayerInTurn.objects.get(
-            match_player=MatchPlayer.objects.get_by_match_and_player(match, players[1]),
-            turn__number=2
-        )
+        players_in_turn[2][0] = PlayerInTurnStep.objects.get_in_last_step(
+            MatchPlayer.objects.get_by_match_and_player(match, players[0]), 2)
+        players_in_turn[2][1] = PlayerInTurnStep.objects.get_in_last_step(
+            MatchPlayer.objects.get_by_match_and_player(match, players[1]), 2)
 
         valid_commands = (0, 1)
         for command in Command.objects.filter(player_in_turn=players_in_turn[1][1]):
@@ -1143,11 +1161,19 @@ class MatchPlay(TestCase):
         for command in Command.objects.filter(player_in_turn=players_in_turn[1][0]):
             self.assertEqual(command.valid, command.order in valid_commands, "Command #%d" % command.order)
 
+        # Test battles
+        self.assertEqual(Turn.objects.get(match=match, number=1).steps.count(), 2)
+
+        self.assertIn("Alice collects 1 power points",
+                      Turn.objects.get(match=match, number=1).get_latest_step().report)
+        self.assertNotIn("Bob collects 0 power points",
+                         Turn.objects.get(match=match, number=1).get_latest_step().report)
+
         # Board status end of turn 1:
         # Player 0:
         # 1 power point
         # 1 fighter in South 7
-        # 1 fighter in North HQ
+        #   1 fighter in North HQ
         #   2 infantry, 2 small tanks, 2 destroyers in reserve
         # Player 1:
         #   0 power points
@@ -1186,7 +1212,7 @@ class MatchPlay(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "0 notifications")
         self.assertContains(response, "NEW")
-        self.assertContains(response, "New turn")
+        self.assertContains(response, "Turn passed")
 
         # Player 0 movements in turn 2:
         # Fighter from headquarters to South 7
@@ -1242,8 +1268,10 @@ class MatchPlay(TestCase):
         # Make ready
         response = self.client.get(reverse('game.views.ready', kwargs={'match_pk': match.pk}), follow=True)
         self.assertRedirects(response, match.get_absolute_url())
-        self.assertTrue(MatchPlayer.objects.get_by_match_and_player(match, players[0]).latest_player_in_turn().ready)
-        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[1]).latest_player_in_turn().ready)
+        self.assertTrue(
+            MatchPlayer.objects.get_by_match_and_player(match, players[0]).latest_player_in_turn_last_step().ready)
+        self.assertFalse(
+            MatchPlayer.objects.get_by_match_and_player(match, players[1]).latest_player_in_turn_last_step().ready)
 
         # Logout and login as player 1
         response = self.client.post(reverse('game.views.logout'), follow=True)
@@ -1260,7 +1288,7 @@ class MatchPlay(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "0 notifications")
         self.assertContains(response, "NEW")
-        self.assertContains(response, "New turn")
+        self.assertContains(response, "Turn passed")
         self.assertContains(response, "invited you to play")
 
         # Player 1 movements in turn 2:
@@ -1320,14 +1348,10 @@ class MatchPlay(TestCase):
 
         players_in_turn = dict()
         players_in_turn[3] = dict()
-        players_in_turn[3][0] = PlayerInTurn.objects.get(
-            match_player=MatchPlayer.objects.get_by_match_and_player(match, players[0]),
-            turn__number=3
-        )
-        players_in_turn[3][1] = PlayerInTurn.objects.get(
-            match_player=MatchPlayer.objects.get_by_match_and_player(match, players[1]),
-            turn__number=3
-        )
+        players_in_turn[3][0] = PlayerInTurnStep.objects.get_in_last_step(
+            MatchPlayer.objects.get_by_match_and_player(match, players[0]), 3)
+        players_in_turn[3][1] = PlayerInTurnStep.objects.get_in_last_step(
+            MatchPlayer.objects.get_by_match_and_player(match, players[1]), 3)
 
         players_in_turn[2] = dict()
         valid_commands = (0, 2, 4)
@@ -1338,6 +1362,13 @@ class MatchPlay(TestCase):
         for command in Command.objects.filter(player_in_turn=players_in_turn[3][1]):
             self.assertEqual(command.valid, command.order in valid_commands, "Command #%d" % command.order)
 
+        # Test battles
+        self.assertEqual(Turn.objects.get(match=match, number=2).steps.count(), 2)
+
+        self.assertIn("Alice collects 1 power points",
+                      Turn.objects.get(match=match, number=2).get_latest_step().report)
+        self.assertNotIn("Bob collects 0 power points",
+                         Turn.objects.get(match=match, number=2).get_latest_step().report)
 
         # Board status end of turn 2:
         # Player 0:
@@ -1433,8 +1464,10 @@ class MatchPlay(TestCase):
         # Make ready
         response = self.client.get(reverse('game.views.ready', kwargs={'match_pk': match.pk}), follow=True)
         self.assertRedirects(response, match.get_absolute_url())
-        self.assertTrue(MatchPlayer.objects.get_by_match_and_player(match, players[1]).latest_player_in_turn().ready)
-        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[0]).latest_player_in_turn().ready)
+        self.assertTrue(
+            MatchPlayer.objects.get_by_match_and_player(match, players[1]).latest_player_in_turn_last_step().ready)
+        self.assertFalse(
+            MatchPlayer.objects.get_by_match_and_player(match, players[0]).latest_player_in_turn_last_step().ready)
 
         # Logout and login as player 0
         response = self.client.post(reverse('game.views.logout'), follow=True)
@@ -1491,14 +1524,10 @@ class MatchPlay(TestCase):
         self.assertRedirects(response, match.get_absolute_url())
 
         players_in_turn[4] = dict()
-        players_in_turn[4][0] = PlayerInTurn.objects.get(
-            match_player=MatchPlayer.objects.get_by_match_and_player(match, players[0]),
-            turn__number=4
-        )
-        players_in_turn[4][1] = PlayerInTurn.objects.get(
-            match_player=MatchPlayer.objects.get_by_match_and_player(match, players[1]),
-            turn__number=4
-        )
+        players_in_turn[4][0] = PlayerInTurnStep.objects.get_in_last_step(
+            MatchPlayer.objects.get_by_match_and_player(match, players[0]), 4)
+        players_in_turn[4][1] = PlayerInTurnStep.objects.get_in_last_step(
+            MatchPlayer.objects.get_by_match_and_player(match, players[1]), 4)
 
         valid_commands = (2, 3, 4)
         for command in Command.objects.filter(player_in_turn=players_in_turn[3][0]):
@@ -1507,6 +1536,23 @@ class MatchPlay(TestCase):
         valid_commands = (0, 1, 2, 3)
         for command in Command.objects.filter(player_in_turn=players_in_turn[3][1]):
             self.assertEqual(command.valid, command.order in valid_commands, "Command #%d" % command.order)
+
+        # Test battles
+        self.assertEqual(Turn.objects.get(match=match, number=3).steps.count(), 3)
+
+        self.assertIn("Alice collects 1 power points",
+                      Turn.objects.get(match=match, number=3).get_latest_step().report)
+        self.assertNotIn("Bob collects 0 power points",
+                         Turn.objects.get(match=match, number=3).get_latest_step().report)
+
+        self.assertEqual(Battle.objects.count(), 1)
+        battle = Battle.objects.last()
+        self.assertEqual(battle.location.name, "South 7")
+        self.assertEqual(battle.turn_step.step, 2)
+        self.assertEqual(battle.turn_step.turn.number, 3)
+        self.assertEqual(battle.winner, None)
+        self.assertEqual(battle.captured_tokens.count(), 0)
+        self.assertEqual(battle.winning_tokens.count(), 4)
 
         # Board status end of turn 3:
         # Player 0:
@@ -1619,8 +1665,10 @@ class MatchPlay(TestCase):
         # Make ready
         response = self.client.get(reverse('game.views.ready', kwargs={'match_pk': match.pk}), follow=True)
         self.assertRedirects(response, match.get_absolute_url())
-        self.assertTrue(MatchPlayer.objects.get_by_match_and_player(match, players[0]).latest_player_in_turn().ready)
-        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[1]).latest_player_in_turn().ready)
+        self.assertTrue(
+            MatchPlayer.objects.get_by_match_and_player(match, players[0]).latest_player_in_turn_last_step().ready)
+        self.assertFalse(
+            MatchPlayer.objects.get_by_match_and_player(match, players[1]).latest_player_in_turn_last_step().ready)
 
         # Logout and login as player 1
         response = self.client.post(reverse('game.views.logout'), follow=True)
@@ -1688,14 +1736,10 @@ class MatchPlay(TestCase):
         self.assertRedirects(response, match.get_absolute_url())
 
         players_in_turn[5] = dict()
-        players_in_turn[5][0] = PlayerInTurn.objects.get(
-            match_player=MatchPlayer.objects.get_by_match_and_player(match, players[0]),
-            turn__number=5
-        )
-        players_in_turn[5][1] = PlayerInTurn.objects.get(
-            match_player=MatchPlayer.objects.get_by_match_and_player(match, players[1]),
-            turn__number=5
-        )
+        players_in_turn[5][0] = PlayerInTurnStep.objects.get_in_last_step(
+            MatchPlayer.objects.get_by_match_and_player(match, players[0]), 5)
+        players_in_turn[5][1] = PlayerInTurnStep.objects.get_in_last_step(
+            MatchPlayer.objects.get_by_match_and_player(match, players[1]), 5)
 
         valid_commands = (0, 2, 3)
         for command in Command.objects.filter(player_in_turn=players_in_turn[4][0]):
@@ -1704,6 +1748,38 @@ class MatchPlay(TestCase):
         valid_commands = (0, 1, 2, 3, 4)
         for command in Command.objects.filter(player_in_turn=players_in_turn[4][1]):
             self.assertEqual(command.valid, command.order in valid_commands, "Command #%d" % command.order)
+
+        # Test battles
+        self.assertEqual(Turn.objects.get(match=match, number=4).steps.count(), 3)
+
+        self.assertIn("Alice collects 1 power points",
+                      Turn.objects.get(match=match, number=4).get_latest_step().report)
+        self.assertNotIn("Bob collects 0 power points",
+                         Turn.objects.get(match=match, number=4).get_latest_step().report)
+
+        self.assertEqual(Battle.objects.count(), 3)
+
+        battle = Battle.objects.get(pk=2)
+        self.assertEqual(battle.location.name, "North 6")
+        self.assertEqual(battle.turn_step.step, 2)
+        self.assertEqual(battle.turn_step.turn.number, 4)
+        self.assertEqual(battle.winner, PlayerInTurnStep.objects.get(
+            turn_step__step=3,
+            turn_step__turn__number=4,
+            match_player__player=players[0]))
+        self.assertEqual(battle.captured_tokens.count(), 1)
+        self.assertEqual(battle.winning_tokens.count(), 1)
+
+        battle = Battle.objects.get(pk=3)
+        self.assertEqual(battle.location.name, "South 7")
+        self.assertEqual(battle.turn_step.step, 2)
+        self.assertEqual(battle.turn_step.turn.number, 4)
+        self.assertEqual(battle.winner, PlayerInTurnStep.objects.get(
+            turn_step__step=3,
+            turn_step__turn__number=4,
+            match_player__player=players[1]))
+        self.assertEqual(battle.captured_tokens.count(), 1)
+        self.assertEqual(battle.winning_tokens.count(), 2)
 
         # Board status end of turn 4:
         # Player 0:
@@ -1848,8 +1924,10 @@ class MatchPlay(TestCase):
         # Make ready
         response = self.client.get(reverse('game.views.ready', kwargs={'match_pk': match.pk}), follow=True)
         self.assertRedirects(response, match.get_absolute_url())
-        self.assertTrue(MatchPlayer.objects.get_by_match_and_player(match, players[1]).latest_player_in_turn().ready)
-        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[0]).latest_player_in_turn().ready)
+        self.assertTrue(
+            MatchPlayer.objects.get_by_match_and_player(match, players[1]).latest_player_in_turn_last_step().ready)
+        self.assertFalse(
+            MatchPlayer.objects.get_by_match_and_player(match, players[0]).latest_player_in_turn_last_step().ready)
 
         # Logout and login as player 0
         response = self.client.post(reverse('game.views.logout'), follow=True)
@@ -1915,14 +1993,10 @@ class MatchPlay(TestCase):
         self.assertRedirects(response, match.get_absolute_url())
 
         players_in_turn[6] = dict()
-        players_in_turn[6][0] = PlayerInTurn.objects.get(
-            match_player=MatchPlayer.objects.get_by_match_and_player(match, players[0]),
-            turn__number=6
-        )
-        players_in_turn[6][1] = PlayerInTurn.objects.get(
-            match_player=MatchPlayer.objects.get_by_match_and_player(match, players[1]),
-            turn__number=6
-        )
+        players_in_turn[6][0] = PlayerInTurnStep.objects.get_in_last_step(
+            MatchPlayer.objects.get_by_match_and_player(match, players[0]), 6)
+        players_in_turn[6][1] = PlayerInTurnStep.objects.get_in_last_step(
+            MatchPlayer.objects.get_by_match_and_player(match, players[1]), 6)
 
         valid_commands = (0, 1, 2, 3)
         for command in Command.objects.filter(player_in_turn=players_in_turn[5][0]):
@@ -1931,6 +2005,27 @@ class MatchPlay(TestCase):
         valid_commands = (0, 1, 2, 3, 4)
         for command in Command.objects.filter(player_in_turn=players_in_turn[5][1]):
             self.assertEqual(command.valid, command.order in valid_commands, "Command #%d" % command.order)
+
+        # Test battles
+        self.assertEqual(Turn.objects.get(match=match, number=5).steps.count(), 3)
+
+        self.assertIn("Alice collects 1 power points",
+                      Turn.objects.get(match=match, number=5).get_latest_step().report)
+        self.assertIn("Bob collects 1 power points",
+                      Turn.objects.get(match=match, number=5).get_latest_step().report)
+
+        self.assertEqual(Battle.objects.count(), 4)
+
+        battle = Battle.objects.get(pk=4)
+        self.assertEqual(battle.location.name, "North HQ")
+        self.assertEqual(battle.turn_step.step, 2)
+        self.assertEqual(battle.turn_step.turn.number, 5)
+        self.assertEqual(battle.winner, PlayerInTurnStep.objects.get(
+            turn_step__step=3,
+            turn_step__turn__number=5,
+            match_player__player=players[0]))
+        self.assertEqual(battle.captured_tokens.count(), 1)
+        self.assertEqual(battle.winning_tokens.count(), 1)
 
         # Board status end of turn 5:
         # Player 0:
@@ -2051,8 +2146,10 @@ class MatchPlay(TestCase):
         # Make ready
         response = self.client.get(reverse('game.views.ready', kwargs={'match_pk': match.pk}), follow=True)
         self.assertRedirects(response, match.get_absolute_url())
-        self.assertTrue(MatchPlayer.objects.get_by_match_and_player(match, players[0]).latest_player_in_turn().ready)
-        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[1]).latest_player_in_turn().ready)
+        self.assertTrue(
+            MatchPlayer.objects.get_by_match_and_player(match, players[0]).latest_player_in_turn_last_step().ready)
+        self.assertFalse(
+            MatchPlayer.objects.get_by_match_and_player(match, players[1]).latest_player_in_turn_last_step().ready)
 
         # Logout and login as player 1
         response = self.client.post(reverse('game.views.logout'), follow=True)
@@ -2120,14 +2217,10 @@ class MatchPlay(TestCase):
         self.assertRedirects(response, match.get_absolute_url())
 
         players_in_turn[7] = dict()
-        players_in_turn[7][0] = PlayerInTurn.objects.get(
-            match_player=MatchPlayer.objects.get_by_match_and_player(match, players[0]),
-            turn__number=7
-        )
-        players_in_turn[7][1] = PlayerInTurn.objects.get(
-            match_player=MatchPlayer.objects.get_by_match_and_player(match, players[1]),
-            turn__number=7
-        )
+        players_in_turn[7][0] = PlayerInTurnStep.objects.get_in_last_step(
+            MatchPlayer.objects.get_by_match_and_player(match, players[0]), 7)
+        players_in_turn[7][1] = PlayerInTurnStep.objects.get_in_last_step(
+            MatchPlayer.objects.get_by_match_and_player(match, players[1]), 7)
 
         valid_commands = (0, 1, 2, 3, 4)
         reverted_commands = (0, )
@@ -2142,6 +2235,32 @@ class MatchPlay(TestCase):
             self.assertEqual(command.valid, command.order in valid_commands, "Command #%d" % command.order)
             self.assertEqual(command.reverted_in_draw, command.order in reverted_commands,
                              "Command #%d" % command.order)
+
+        # Test battles
+        self.assertEqual(Turn.objects.get(match=match, number=6).steps.count(), 4)
+
+        self.assertIn("Alice collects 1 power points",
+                      Turn.objects.get(match=match, number=6).get_latest_step().report)
+        self.assertNotIn("Bob collects 0 power points",
+                         Turn.objects.get(match=match, number=6).get_latest_step().report)
+
+        self.assertEqual(Battle.objects.count(), 6)
+
+        battle = Battle.objects.get(pk=5)
+        self.assertEqual(battle.location.name, "South 6")
+        self.assertEqual(battle.turn_step.step, 2)
+        self.assertEqual(battle.turn_step.turn.number, 6)
+        self.assertEqual(battle.winner, None)
+        self.assertEqual(battle.captured_tokens.count(), 0)
+        self.assertEqual(battle.winning_tokens.count(), 2)
+
+        battle = Battle.objects.get(pk=6)
+        self.assertEqual(battle.location.name, "South 3")
+        self.assertEqual(battle.turn_step.step, 3)
+        self.assertEqual(battle.turn_step.turn.number, 6)
+        self.assertEqual(battle.winner, None)
+        self.assertEqual(battle.captured_tokens.count(), 0)
+        self.assertEqual(battle.winning_tokens.count(), 2)
 
         # Board status end of turn 6
         # Player 0:
@@ -2254,8 +2373,10 @@ class MatchPlay(TestCase):
         # Make ready
         response = self.client.get(reverse('game.views.ready', kwargs={'match_pk': match.pk}), follow=True)
         self.assertRedirects(response, match.get_absolute_url())
-        self.assertTrue(MatchPlayer.objects.get_by_match_and_player(match, players[1]).latest_player_in_turn().ready)
-        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[0]).latest_player_in_turn().ready)
+        self.assertTrue(
+            MatchPlayer.objects.get_by_match_and_player(match, players[1]).latest_player_in_turn_last_step().ready)
+        self.assertFalse(
+            MatchPlayer.objects.get_by_match_and_player(match, players[0]).latest_player_in_turn_last_step().ready)
 
         # Logout and login as player 0
         response = self.client.post(reverse('game.views.logout'), follow=True)
@@ -2323,14 +2444,10 @@ class MatchPlay(TestCase):
         self.assertRedirects(response, match.get_absolute_url())
 
         players_in_turn[8] = dict()
-        players_in_turn[8][0] = PlayerInTurn.objects.get(
-            match_player=MatchPlayer.objects.get_by_match_and_player(match, players[0]),
-            turn__number=8
-        )
-        players_in_turn[8][1] = PlayerInTurn.objects.get(
-            match_player=MatchPlayer.objects.get_by_match_and_player(match, players[1]),
-            turn__number=8
-        )
+        players_in_turn[8][0] = PlayerInTurnStep.objects.get_in_last_step(
+            MatchPlayer.objects.get_by_match_and_player(match, players[0]), 8)
+        players_in_turn[8][1] = PlayerInTurnStep.objects.get_in_last_step(
+            MatchPlayer.objects.get_by_match_and_player(match, players[1]), 8)
 
         for command in Command.objects.filter(player_in_turn=players_in_turn[7][0]):
             self.assertFalse(command.valid, "Command #%d" % command.order)
@@ -2338,11 +2455,21 @@ class MatchPlay(TestCase):
         for command in Command.objects.filter(player_in_turn=players_in_turn[7][1]):
             self.assertEqual(command.valid, command.order == 2, "Command #%d" % command.order)
 
+        # Test battles
+        self.assertEqual(Turn.objects.get(match=match, number=7).steps.count(), 2)
+
+        self.assertIn("Alice had no valid commands, loses one power point",
+                      Turn.objects.get(match=match, number=7).get_first_step().report)
+        self.assertIn("Alice collects 1 power points",
+                      Turn.objects.get(match=match, number=7).get_latest_step().report)
+        self.assertIn("Bob collects 1 power points",
+                      Turn.objects.get(match=match, number=7).get_latest_step().report)
+
         # Board status end of turn 7
         # Player 0:
         #   4 power points (no increase because no valid movements)
         #   1 Tank in North 8
-        #   1 fighter in South 3 (retreated)
+        # 1 fighter in South 3
         #   1 destroyer in East Island
         #   1 regiment in North 9
         #   1 fighter in North HQ
@@ -2429,8 +2556,10 @@ class MatchPlay(TestCase):
         # Make ready
         response = self.client.get(reverse('game.views.ready', kwargs={'match_pk': match.pk}), follow=True)
         self.assertRedirects(response, match.get_absolute_url())
-        self.assertTrue(MatchPlayer.objects.get_by_match_and_player(match, players[0]).latest_player_in_turn().ready)
-        self.assertFalse(MatchPlayer.objects.get_by_match_and_player(match, players[1]).latest_player_in_turn().ready)
+        self.assertTrue(
+            MatchPlayer.objects.get_by_match_and_player(match, players[0]).latest_player_in_turn_last_step().ready)
+        self.assertFalse(
+            MatchPlayer.objects.get_by_match_and_player(match, players[1]).latest_player_in_turn_last_step().ready)
 
         # Logout and login as player 1
         response = self.client.post(reverse('game.views.logout'), follow=True)
@@ -2458,20 +2587,41 @@ class MatchPlay(TestCase):
         self.assertRedirects(response, match.get_absolute_url())
 
         players_in_turn[9] = dict()
-        players_in_turn[9][0] = PlayerInTurn.objects.get(
-            match_player=MatchPlayer.objects.get_by_match_and_player(match, players[0]),
-            turn__number=9
-        )
-        players_in_turn[9][1] = PlayerInTurn.objects.get(
-            match_player=MatchPlayer.objects.get_by_match_and_player(match, players[1]),
-            turn__number=9
-        )
+        players_in_turn[9][0] = PlayerInTurnStep.objects.get_in_last_step(
+            MatchPlayer.objects.get_by_match_and_player(match, players[0]), 9)
+        players_in_turn[9][1] = PlayerInTurnStep.objects.get_in_last_step(
+            MatchPlayer.objects.get_by_match_and_player(match, players[1]), 9)
 
         for command in Command.objects.filter(player_in_turn=players_in_turn[8][0]):
             self.assertTrue(command.valid, "Command #%d" % command.order)
 
         for command in Command.objects.filter(player_in_turn=players_in_turn[8][1]):
             self.assertTrue(command.valid, "Command #%d" % command.order)
+
+        # Test battles
+        self.assertEqual(Turn.objects.get(match=match, number=8).steps.count(), 3)
+
+        self.assertNotIn("Alice collects 1 power points",
+                         Turn.objects.get(match=match, number=8).get_first_step().report)
+        self.assertNotIn("Bob collects 1 power points",
+                         Turn.objects.get(match=match, number=8).get_first_step().report)
+        self.assertIn("Bob captured Alice's flag",
+                      Turn.objects.get(match=match, number=8).get_latest_step().report)
+        self.assertIn("Bob wins the match!",
+                      Turn.objects.get(match=match, number=8).get_latest_step().report)
+
+        self.assertEqual(Battle.objects.count(), 7)
+
+        battle = Battle.objects.get(pk=7)
+        self.assertEqual(battle.location.name, "South 7")
+        self.assertEqual(battle.turn_step.step, 2)
+        self.assertEqual(battle.turn_step.turn.number, 8)
+        self.assertEqual(battle.winner, PlayerInTurnStep.objects.get(
+            turn_step__step=3,
+            turn_step__turn__number=8,
+            match_player__player=players[0]))
+        self.assertEqual(battle.captured_tokens.count(), 1)
+        self.assertEqual(battle.winning_tokens.count(), 1)
 
         # Board status end of turn 8
         # Player 0: DEFEATED
@@ -2544,9 +2694,10 @@ class MatchPlay(TestCase):
 
         self.assertTrue(players_in_turn[9][0].defeated)
         self.assertFalse(players_in_turn[9][1].defeated)
-        self.assertTrue(MatchPlayer.objects.get_by_match_and_player(match, players[0]).latest_player_in_turn().defeated)
+        self.assertTrue(
+            MatchPlayer.objects.get_by_match_and_player(match, players[0]).latest_player_in_turn_last_step().defeated)
         self.assertFalse(
-            MatchPlayer.objects.get_by_match_and_player(match, players[1]).latest_player_in_turn().defeated)
+            MatchPlayer.objects.get_by_match_and_player(match, players[1]).latest_player_in_turn_last_step().defeated)
         match = Match.objects.get(id=match.id)
         self.assertEqual(match.status, Match.STATUS_FINISHED)
 
@@ -2805,14 +2956,14 @@ class MatchPlay(TestCase):
         self.assertEqual(MatchPlayer.objects.get_by_match_and_player(match, players[0]).country, countries[0])
         self.assertEqual(MatchPlayer.objects.get_by_match_and_player(match, players[1]).country, countries[1])
         turn = Turn.objects.get(match=match, number=1)
-        self.assertEqual(len(PlayerInTurn.objects.filter(match_player__match=match)), 2)
+        self.assertEqual(len(PlayerInTurnStep.objects.filter(match_player__match=match)), 2)
         self.assertEqual(len(BoardToken.objects.filter(
             owner__match_player=MatchPlayer.objects.get_by_match_and_player(match, players[0]))), 8)
         self.assertEqual(len(BoardToken.objects.filter(
             owner__match_player=MatchPlayer.objects.get_by_match_and_player(match, players[1]))), 8)
-        self.assertEqual(PlayerInTurn.objects.get(
+        self.assertEqual(PlayerInTurnStep.objects.get(
             match_player=MatchPlayer.objects.get_by_match_and_player(match, players[0])).total_strength, 40)
-        self.assertEqual(PlayerInTurn.objects.get(
+        self.assertEqual(PlayerInTurnStep.objects.get(
             match_player=MatchPlayer.objects.get_by_match_and_player(match, players[1])).total_strength, 40)
 
         # Load notifications page
@@ -2831,13 +2982,13 @@ class MatchPlay(TestCase):
         match_player[0] = MatchPlayer.objects.get_by_match_and_player(match, players[0])
         match_player[1] = MatchPlayer.objects.get_by_match_and_player(match, players[1])
         self.assertFalse(match_player[0].left_match)
-        self.assertFalse(match_player[0].latest_player_in_turn().left_match)
+        self.assertFalse(match_player[0].latest_player_in_turn_last_step().left_match)
         self.assertTrue(match_player[0].is_active())
         self.assertTrue(match_player[1].left_match)
-        self.assertTrue(match_player[1].latest_player_in_turn().left_match)
+        self.assertTrue(match_player[1].latest_player_in_turn_last_step().left_match)
         self.assertFalse(match_player[1].is_active())
-        self.assertTrue(BoardToken.objects.filter(owner=match_player[0].latest_player_in_turn()).exists())
-        self.assertFalse(BoardToken.objects.filter(owner=match_player[1].latest_player_in_turn()).exists())
+        self.assertTrue(BoardToken.objects.filter(owner=match_player[0].latest_player_in_turn_last_step()).exists())
+        self.assertFalse(BoardToken.objects.filter(owner=match_player[1].latest_player_in_turn_last_step()).exists())
 
         # Logout and login as player 0
         response = self.client.post(reverse('game.views.logout'), follow=True)
